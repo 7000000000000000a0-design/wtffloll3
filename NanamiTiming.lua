@@ -8,20 +8,20 @@ if type(httpget) == "function" then source = httpget(url) else source = game:Htt
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
-local window = Nova:CreateWindow({Title="ABA Timings", Subtitle="Matcha v6 - Character timings", ToggleKey="RightShift", Open=true, Size={560,440}})
-local tab = window:Tab("Nanami")
-tab:Section("Ratio timing")
+local window = Nova:CreateWindow({Title="ABA Timings", Subtitle="Matcha v7", ToggleKey="RightShift", Open=true, Size={560,500}})
+local tab = window:Tab("Timings")
+tab:Section("Nanami")
 local enabled, alive, clicked = false, true, false
 local lastNanamiClick=-math.huge
 local prompts = {}
 local connection, lastStatus, lastError
-local status = tab:Label("Auto Timing: OFF")
+local status = tab:Label("Auto Nanami: OFF")
 local function message(text)
     if text ~= lastStatus then lastStatus=text; status:SetText(text) end
 end
-tab:Toggle({Name="Auto Timing", Default=false, Callback=function(on)
+tab:Toggle({Name="Auto Nanami", Default=false, Callback=function(on)
     enabled=on; prompts={}; clicked=false
-    message(on and "Waiting for your Nanami move..." or "Auto Timing: OFF")
+    message(on and "Waiting for your Nanami move..." or "Auto Nanami: OFF")
     if on then window:Toggle(false) end
 end})
 tab:Label("Right Shift: show / hide this menu")
@@ -68,19 +68,10 @@ local function readRatio(bar,cutter)
     end
 end
 -- Other explicit reaction checks found in .RunOnceLocal.
-local flashTab=window:Tab("Black Flash")
-flashTab:Section("BlackFlashCheck")
-local flashOn=false
-local flashStatus=flashTab:Label("Auto Black Flash: OFF")
-flashTab:Label("Zoom timing: detects the 20-FOV and 6-FOV zoom endpoints.")
-flashTab:Label("Clicks once when zoom-in finishes; watches for the next move.")
+local flashTab=tab
+flashTab:Section("Yuji / Todo / TS Law")
+local flashStatus=flashTab:Label("Character timing toggles are below.")
 local flash={last=nil,minimum=math.huge,descending=false,fired=false}
-flashTab:Toggle({Name="Auto Black Flash",Default=false,Callback=function(on)
-    flashOn=on;flash={last=nil,minimum=math.huge,descending=false,fired=false}
-    flashStatus:SetText(on and "Waiting for the Black Flash zoom..." or "Auto Black Flash: OFF")
-    if on then window:Toggle(false) end
-end})
-flashTab:Section("Reference character timings")
 local characterTimings={Yuji=false,Todo=false,["TS Law"]=false}
 local characterOverride="Auto"
 local m1Cooldown,quietAfterNanami=.2,.6
@@ -137,7 +128,7 @@ local function enabledCharacterProfile(now)
     if detectedCharacter then return characterTimings[detectedCharacter]==true end
     return true
 end
-local kokuTab=window:Tab("Kokushibo")
+local kokuTab=tab
 kokuTab:Section("KokushiboCheck")
 local kokuOn=false
 local kokuStatus=kokuTab:Label("Auto Kokushibo: OFF")
@@ -160,7 +151,7 @@ local function updateOtherTimings()
     if not alive then return end
     local now=tick and tick() or os.clock()
     local profileEnabled=enabledCharacterProfile(now)
-    if flashOn or profileEnabled then
+    if profileEnabled then
         local cam=world.CurrentCamera
         local fov=cam and cam.FieldOfView
         if type(fov)=="number" then
@@ -168,17 +159,10 @@ local function updateOtherTimings()
                 local delta=fov-flash.last
                 if delta<-.05 then flash.descending=true end
                 flash.minimum=math.min(flash.minimum,fov)
-                local at20=math.abs(fov-20)<=.15
-                local at6=math.abs(fov-6)<=.15
-                local knownMinimum=math.abs(flash.minimum-20)<=.5 or math.abs(flash.minimum-6)<=.5
-                local stopped=(at20 or at6) and math.abs(delta)<=.015
-                local returning=knownMinimum and delta>.05
-                -- Check before resetting at normal FOV, so a 20 -> 70 snap is caught.
-                local endpoint=(at6 and delta<=0) or stopped or returning
                 -- Reference MYABA uses a downward-FOV latch followed by any upward edge.
-                if profileEnabled then endpoint=delta>.0001 end
+                local endpoint=delta>.0001
                 if flash.descending and endpoint and not flash.fired then
-                    local ready=not profileEnabled or (now-lastProfileClick>=m1Cooldown and now-lastNanamiClick>=quietAfterNanami)
+                    local ready=now-lastProfileClick>=m1Cooldown and now-lastNanamiClick>=quietAfterNanami
                     if ready and type(mouse1click)=="function" and not window:IsOpen() then
                         mouse1click();flash.fired=true
                         lastProfileClick=now
@@ -309,4 +293,4 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
         lastError=tostring(otherError);print("[ABA Timings] "..lastError)
     end
 end)
-print("[ABA Timings v6] Loaded. Right Shift shows/hides the menu. All timing toggles default to OFF.")
+print("[ABA Timings v7] Loaded. Open Timings for all five toggles. Right Shift shows/hides the menu.")
