@@ -8,10 +8,11 @@ if type(httpget) == "function" then source = httpget(url) else source = game:Htt
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
-local window = Nova:CreateWindow({Title="ABA Timings", Subtitle="Matcha v5 - Zoom timing", ToggleKey="RightShift", Open=true, Size={540,410}})
+local window = Nova:CreateWindow({Title="ABA Timings", Subtitle="Matcha v6 - Character timings", ToggleKey="RightShift", Open=true, Size={560,440}})
 local tab = window:Tab("Nanami")
 tab:Section("Ratio timing")
 local enabled, alive, clicked = false, true, false
+local lastNanamiClick=-math.huge
 local prompts = {}
 local connection, lastStatus, lastError
 local status = tab:Label("Auto Timing: OFF")
@@ -79,6 +80,63 @@ flashTab:Toggle({Name="Auto Black Flash",Default=false,Callback=function(on)
     flashStatus:SetText(on and "Waiting for the Black Flash zoom..." or "Auto Black Flash: OFF")
     if on then window:Toggle(false) end
 end})
+flashTab:Section("Reference character timings")
+local characterTimings={Yuji=false,Todo=false,["TS Law"]=false}
+local characterOverride="Auto"
+local m1Cooldown,quietAfterNanami=.2,.6
+local lastProfileClick=-math.huge
+local detectedCharacter,nextCharacterScan=nil,0
+local profileStatus=flashTab:Label("Character: Auto (not detected)")
+for _,name in ipairs({"Yuji","Todo","TS Law"})do
+    local characterName=name
+    flashTab:Toggle({Name="Auto "..characterName,Default=false,Callback=function(on)
+        characterTimings[characterName]=on
+        flash={last=nil,minimum=math.huge,descending=false,fired=false}
+        if on then window:Toggle(false) end
+    end})
+end
+flashTab:Dropdown({Name="Character",Options={"Auto","Yuji","Todo","TS Law"},Default="Auto",Callback=function(value)
+    characterOverride=value
+end})
+flashTab:Label("Yuji / Todo / TS Law: click on FOV return, as in the reference.")
+flashTab:Label("If Auto cannot detect your character, pin it in Character.")
+flashTab:Slider({Name="Character click cooldown",Min=.05,Max=1,Default=.2,Increment=.01,Suffix=" s",Callback=function(v)m1Cooldown=v end})
+flashTab:Slider({Name="Pause after Nanami cut",Min=0,Max=2,Default=.6,Increment=.05,Suffix=" s",Callback=function(v)quietAfterNanami=v end})
+local function characterFrom(value)
+    if type(value)~="string" then return end
+    local text=value:lower():gsub("[%s_%-]","")
+    if text:find("yuji",1,true) or text:find("itadori",1,true) then return "Yuji" end
+    if text:find("todo",1,true) then return "Todo" end
+    if text:find("tslaw",1,true) or text:find("timeskiplaw",1,true) or text=="law" then return "TS Law" end
+end
+local function enabledCharacterProfile(now)
+    if not (characterTimings.Yuji or characterTimings.Todo or characterTimings["TS Law"])then return false end
+    if characterOverride~="Auto" then
+        profileStatus:SetText("Character: "..characterOverride.." (pinned)")
+        return characterTimings[characterOverride]==true
+    end
+    if now>=nextCharacterScan then
+        nextCharacterScan=now+.5;detectedCharacter=nil
+        local player=players.LocalPlayer
+        local roots={player,player and player.Character,player and player:FindFirstChild("ReplicatedStats")}
+        for i=1,3 do
+            local root=roots[i]
+            if root then
+                local ok,attrs=pcall(function()return root:GetAttributes()end)
+                if ok and type(attrs)=="table" then
+                    for _,v in pairs(attrs)do detectedCharacter=detectedCharacter or characterFrom(v) end
+                end
+                for _,obj in ipairs(root:GetChildren())do
+                    local success,value=pcall(function()return obj.Value end)
+                    if success then detectedCharacter=detectedCharacter or characterFrom(value) end
+                end
+            end
+        end
+    end
+    profileStatus:SetText(detectedCharacter and ("Character: "..detectedCharacter.." (detected)") or "Character unknown: any enabled profile applies")
+    if detectedCharacter then return characterTimings[detectedCharacter]==true end
+    return true
+end
 local kokuTab=window:Tab("Kokushibo")
 kokuTab:Section("KokushiboCheck")
 local kokuOn=false
@@ -100,7 +158,9 @@ local function localX(obj)
 end
 local function updateOtherTimings()
     if not alive then return end
-    if flashOn then
+    local now=tick and tick() or os.clock()
+    local profileEnabled=enabledCharacterProfile(now)
+    if flashOn or profileEnabled then
         local cam=world.CurrentCamera
         local fov=cam and cam.FieldOfView
         if type(fov)=="number" then
@@ -115,11 +175,15 @@ local function updateOtherTimings()
                 local returning=knownMinimum and delta>.05
                 -- Check before resetting at normal FOV, so a 20 -> 70 snap is caught.
                 local endpoint=(at6 and delta<=0) or stopped or returning
+                -- Reference MYABA uses a downward-FOV latch followed by any upward edge.
+                if profileEnabled then endpoint=delta>.0001 end
                 if flash.descending and endpoint and not flash.fired then
-                    if type(mouse1click)=="function" and not window:IsOpen() then
+                    local ready=not profileEnabled or (now-lastProfileClick>=m1Cooldown and now-lastNanamiClick>=quietAfterNanami)
+                    if ready and type(mouse1click)=="function" and not window:IsOpen() then
                         mouse1click();flash.fired=true
+                        lastProfileClick=now
                         flashStatus:SetText("Zoom timing click sent; watching for the next move.")
-                        print("[ABA Timings v5] Black Flash zoom click; FOV="..tostring(fov)..", minimum="..tostring(flash.minimum))
+                        print("[ABA Timings v6] Black Flash zoom click; FOV="..tostring(fov)..", minimum="..tostring(flash.minimum))
                     end
                 end
             end
@@ -219,6 +283,7 @@ local function update()
                         message("Hide the menu with Right Shift to resume timing.")
                     elseif math.abs(ratio-.7) < .018 and not sent then
                         mouse1click(); prompt.fired=true; sent=true
+                        lastNanamiClick=tick and tick() or os.clock()
                         print("[Nanami Timing v3] Click at "..tostring(ratio).." via "..method)
                         message("Timing click sent; watching for the next prompt...")
                     elseif ratio <= .72 then
@@ -244,4 +309,4 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
         lastError=tostring(otherError);print("[ABA Timings] "..lastError)
     end
 end)
-print("[Nanami Timing] Loaded. Right Shift shows/hides the menu. Auto Timing defaults to OFF.")
+print("[ABA Timings v6] Loaded. Right Shift shows/hides the menu. All timing toggles default to OFF.")
