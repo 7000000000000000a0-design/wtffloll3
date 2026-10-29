@@ -106,32 +106,16 @@ local menuColorSource=table.concat({
     "            C.dim=light and RGB(65,70,82) or RGB(160,168,185)",
     "            C.faint=light and RGB(90,95,108) or RGB(105,115,135)",
     "        end",
-    "        settings:Colorpicker({Name=\"Menu color\",Default=C.bg,Callback=applyMenuColor})",
+    "        if type(saved.__menu)==\"string\" then applyMenuColor(hexToColor(saved.__menu) or C.bg) end",
+    "        settings:Colorpicker({Name=\"Menu color\",Default=C.bg,Callback=function(c) applyMenuColor(c); Window:Save() end})",
     "",
 }, "\n")
 local accentMarker="        accentEl.menuAccent = true"
 local accentStart,accentEnd=source:find(accentMarker,1,true)
 assert(accentStart,"Nova Settings layout changed")
 source=source:sub(1,accentEnd).."\n"..menuColorSource..source:sub(accentEnd+1)
-local sidebarPictureSource=table.concat({
-    "        if opts.SidebarImage then",
-    "            local imageTop=math.max(ty+12,y+h-170)",
-    "            local imageSize=math.min(SIDEBAR-24,y+h-42-imageTop)",
-    "            if imageSize>20 then",
-    "                picture(\"aba-sidebar-picture\",opts.SidebarImage,x+(SIDEBAR-imageSize)/2,imageTop,imageSize,imageSize,3,.5)",
-    "            end",
-    "        end",
-    "",
-}, "\n")
-local footerMarker="        -- Footer: the key that hides the window."
-local footerStart=source:find(footerMarker,1,true)
-assert(footerStart,"Nova sidebar layout changed")
-source=source:sub(1,footerStart-1)..sidebarPictureSource..source:sub(footerStart)
-source=source:gsub("local function picture%(key, data, x, y, w, h, z%)","local function picture(key, data, x, y, w, h, z, opacity)")
-local opacityMarker='put(o, c, "ZIndex", z or 4) put(o, c, "Transparency", Fade)'
-local opacityStart,opacityEnd=source:find(opacityMarker,1,true)
-assert(opacityStart,"Nova image drawing layout changed")
-source=source:sub(1,opacityStart-1)..'put(o, c, "ZIndex", z or 4) put(o, c, "Transparency", (opacity or 1) * Fade)'..source:sub(opacityEnd+1)
+source=source:gsub("__accent = accentHex, __mouseoffset", "__accent = accentHex, __menu = colorToHex(C.bg), __mouseoffset")
+source=source:gsub("applyAccent%(c%); markChanged%(%)", "applyAccent(c); markChanged(); Window:Save()")
 local ownedDrawings={}
 local function clearOwnedDrawings()
     for _,drawing in ipairs(ownedDrawings)do
@@ -161,13 +145,8 @@ source=table.concat({
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
-local sidebarImageData
-pcall(function()
-    local imageURL="https://raw.githubusercontent.com/7000000000000000a0-design/wtffloll3/main/assets/sidebar-pig.png"
-    if type(httpget)=="function" then sidebarImageData=httpget(imageURL) else sidebarImageData=game:HttpGet(imageURL)end
-end)
 local state
-local window = Nova:CreateWindow({Title="hahahahahaha", SidebarImage=sidebarImageData, ToggleKey="RightShift", Open=true, Size={480,380}, OnUnload=function()
+local window = Nova:CreateWindow({Title="hahahahahaha", Folder="hahahahahaha", ConfigName="menu-colors", ToggleKey="RightShift", Open=true, Size={480,380}, OnUnload=function()
     if state then state.Destroy() end
 end})
 if window.SettingsTab and window.SettingsTab.elements then
