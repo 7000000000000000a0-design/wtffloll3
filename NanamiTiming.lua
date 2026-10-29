@@ -16,6 +16,10 @@ local function clearOwnedDrawings()
 end
 -- Track only objects created by this copy of Nova, without replacing global Drawing.
 _G.ABATimingOwnedDrawings=ownedDrawings
+-- Matcha may not run short-lived spawned button callbacks reliably.
+source=source:gsub("task%.spawn%(callback, el%)","callback(el)")
+-- A button can unload during frame(); remove anything drawn later in that frame.
+source=source:gsub("local ok, err = pcall%(frame%)","local ok, err = pcall(frame)\n        if not alive then pcall(wipe) end")
 source=source:gsub("Drawing%.new","abaOwnedDrawingNew")
 source=table.concat({
     "local abaNativeDrawingNew=Drawing.new",
