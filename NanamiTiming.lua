@@ -1,4 +1,11 @@
 -- Nanami timing menu, extracted from the supplied aba.rbxl.
+-- Check capabilities before waiting for assets or changing any game callbacks.
+if not Instance or type(Instance.new) ~= "function" then
+    error("Nanami Timing: this runner does not provide Roblox's Instance.new API, so it cannot create the menu. Run this as a LocalScript in Roblox Studio in the supplied ABA place. Downloading it with loadstring does not add missing Roblox APIs.", 0)
+end
+if not UDim2 or not Color3 or not Enum or not TweenInfo then
+    error("Nanami Timing: required Roblox UI APIs are unavailable in this runner. Run this as a Roblox LocalScript in the supplied ABA place.", 0)
+end
 local player = game:GetService("Players").LocalPlayer
 assert(player, "Run this script on the client")
 local PlayerGui_1 = player:WaitForChild("PlayerGui")
