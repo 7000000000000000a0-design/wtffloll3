@@ -254,13 +254,13 @@ end
 local flashTab=tab
 
 local flash={last=nil,minimum=math.huge,descending=false,fired=false}
-local characterTimings={Yuji=false,Todo=false,["TS Law"]=false,Geto=false}
+local characterTimings={Yuji=false,Todo=false,["TS Law"]=false,Geto=false,Kaido=false}
 local characterOverride="Auto"
 local m1Cooldown,quietAfterNanami=.2,.6
 local lastProfileClick=-math.huge
 local detectedCharacter,nextCharacterScan=nil,0
 
-for _,name in ipairs({"Yuji","Todo","TS Law","Geto"})do
+for _,name in ipairs({"Yuji","Todo","TS Law","Geto","Kaido"})do
     local characterName=name
     flashTab:Toggle({Name="Auto "..characterName,Default=false,Callback=function(on)
         characterTimings[characterName]=on
@@ -277,9 +277,10 @@ local function characterFrom(value)
     if text:find("todo",1,true) then return "Todo" end
     if text:find("tslaw",1,true) or text:find("timeskiplaw",1,true) or text=="law" then return "TS Law" end
     if text:find("geto",1,true) or text:find("suguru",1,true) then return "Geto" end
+    if text:find("kaido",1,true) then return "Kaido" end
 end
 local function enabledCharacterProfile(now)
-    if not (characterTimings.Yuji or characterTimings.Todo or characterTimings["TS Law"] or characterTimings.Geto)then return false end
+    if not (characterTimings.Yuji or characterTimings.Todo or characterTimings["TS Law"] or characterTimings.Geto or characterTimings.Kaido)then return false end
     if characterOverride~="Auto" then
         
         return characterTimings[characterOverride]==true
@@ -467,4 +468,4 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
         lastError=tostring(otherError);print("[ABA Timings] "..lastError)
     end
 end)
-print("[hahahahahaha] Loaded. Open Timings for all six toggles. Right Shift shows/hides the menu.")
+print("[hahahahahaha] Loaded. Open Timings for all seven toggles. Right Shift shows/hides the menu.")
