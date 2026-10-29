@@ -169,6 +169,7 @@ pcall(function()
     if type(httpget)=="function" then colorWheelImage=httpget(wheelURL)else colorWheelImage=game:HttpGet(wheelURL)end
 end)
 local state
+local ropeSpaceHeld=false
 local window = Nova:CreateWindow({Title="hahahahahaha", ColorWheelImage=colorWheelImage, Folder="hahahahahaha", ConfigName="menu-colors", ToggleKey="RightShift", Open=true, Size={480,380}, OnUnload=function()
     if state then state.Destroy() end
 end})
@@ -204,6 +205,7 @@ state = {}
 function state.Destroy()
     if not alive then return end
     alive=false; enabled=false
+    if ropeSpaceHeld and type(keyrelease)=="function" then pcall(keyrelease,0x20);ropeSpaceHeld=false end
     if connection then pcall(function()connection:Disconnect()end);connection=nil end
     pcall(function()window:Toggle(false)end)
     pcall(function()window:Destroy()end)
@@ -221,6 +223,66 @@ _G.NanamiTimingMatcha=state
 
 local players=game:GetService("Players")
 local world=game:GetService("Workspace")
+local ropeOn=false
+local ropeState={}
+local ropeUnavailable=false
+tab:Toggle({Name="Auto Luffy Jump Rope",Default=false,Callback=function(on)
+    ropeOn=on;ropeState={};ropeUnavailable=false
+    if ropeSpaceHeld and type(keyrelease)=="function" then pcall(keyrelease,0x20);ropeSpaceHeld=false end
+end})
+local function updateJumpRope()
+    local now=tick and tick() or os.clock()
+    if ropeSpaceHeld and now>=(ropeState.releaseAt or 0)then
+        pcall(keyrelease,0x20);ropeSpaceHeld=false
+    end
+    if not ropeOn then return end
+    local player=players.LocalPlayer
+    local character=player and player.Character
+    if not character or not character:FindFirstChild("JumpRoper")then ropeState={};return end
+    if type(keypress)~="function" or type(keyrelease)~="function"then
+        if not ropeUnavailable then print('[Jump Rope] Matcha keypress/keyrelease APIs are required.');ropeUnavailable=true end
+        return
+    end
+    local live=world:FindFirstChild("Live")
+    if not live then return end
+    local supported=false
+    local ropeTrack
+    for _,model in ipairs(live:GetChildren())do
+        local humanoid=model:FindFirstChild("Humanoid")
+        if humanoid then
+            local ok,tracks=pcall(function()return humanoid:GetPlayingAnimationTracks()end)
+            if ok and type(tracks)=="table"then
+                supported=true
+                for _,track in ipairs(tracks)do
+                    local valid,id=pcall(function()return tostring(track.Animation.AnimationId)end)
+                    if valid and id:find("87378310176351",1,true)then ropeTrack=track;break end
+                end
+            end
+        end
+        if ropeTrack then break end
+    end
+    if not supported then
+        if not ropeUnavailable then print('[Jump Rope] This Matcha build cannot read playing animations; exact rope timing is unavailable.');ropeUnavailable=true end
+        return
+    end
+    if not ropeTrack then return end
+    local ok,position,length,speed,trip=pcall(function()
+        return ropeTrack.TimePosition,ropeTrack.Length,ropeTrack.Speed,ropeTrack:GetTimeOfKeyframe("Trip")
+    end)
+    if not ok or type(position)~="number" or type(length)~="number" or type(speed)~="number" or type(trip)~="number" or length<=0 or speed<=0 then
+        if not ropeUnavailable then print('[Jump Rope] Animation position, speed, length, and Trip keyframe access are required.');ropeUnavailable=true end
+        return
+    end
+    if ropeState.track~=ropeTrack then ropeState={track=ropeTrack,last=position,looped=false,fired=false}end
+    if ropeState.last and position<ropeState.last-.02 then ropeState.looped=true;ropeState.fired=false end
+    ropeState.last=position
+    local remaining=((trip-position)%length)/speed
+    -- The actual jump is a 0.3-second sine arc: start 0.15 seconds before Trip.
+    -- The first rope loop is ignored by the game's own success check.
+    if ropeState.looped and not ropeState.fired and remaining<=.15 and remaining>.02 and not ropeSpaceHeld then
+        keypress(0x20);ropeSpaceHeld=true;ropeState.releaseAt=now+.025;ropeState.fired=true
+    end
+end
 local armedUntil=0
 local lastKeys={}
 local positionOffset
@@ -468,5 +530,7 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
     if not otherOK and tostring(otherError)~=lastError then
         lastError=tostring(otherError);print("[ABA Timings] "..lastError)
     end
+    local ropeOK,ropeError=pcall(updateJumpRope)
+    if not ropeOK and not ropeUnavailable then ropeUnavailable=true;print('[Jump Rope] '..tostring(ropeError))end
 end)
-print("[hahahahahaha] Loaded. Open Timings for all eight toggles. Right Shift shows/hides the menu.")
+print("[hahahahahaha] Loaded. Right Shift shows/hides the menu.")
