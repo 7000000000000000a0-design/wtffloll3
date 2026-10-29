@@ -188,13 +188,13 @@ local function updateOtherTimings()
                 koku.positions[id]=x
             end
         end
-        if count==0 then ;return end
+        if count==0 then return end
         if changed then koku.moved=true;koku.stable=0
         elseif koku.moved then koku.stable=koku.stable+1 end
         if koku.stable>=2 and not window:IsOpen() then
             if type(mouse2click)=="function" then
-                mouse2click();koku.fired=true;
-            else  end
+                mouse2click();koku.fired=true
+            end
         end
     end
 end
