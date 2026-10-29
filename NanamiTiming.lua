@@ -8,7 +8,7 @@ if type(httpget) == "function" then source = httpget(url) else source = game:Htt
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
-local window = Nova:CreateWindow({Title="ABA Timings", Subtitle="Matcha v4", ToggleKey="RightShift", Open=true, Size={540,410}})
+local window = Nova:CreateWindow({Title="ABA Timings", Subtitle="Matcha v5 - Zoom timing", ToggleKey="RightShift", Open=true, Size={540,410}})
 local tab = window:Tab("Nanami")
 tab:Section("Ratio timing")
 local enabled, alive, clicked = false, true, false
@@ -71,7 +71,8 @@ local flashTab=window:Tab("Black Flash")
 flashTab:Section("BlackFlashCheck")
 local flashOn=false
 local flashStatus=flashTab:Label("Auto Black Flash: OFF")
-flashTab:Label("Unverified cue detection: click when the zoom starts returning.")
+flashTab:Label("Zoom timing: detects the 20-FOV and 6-FOV zoom endpoints.")
+flashTab:Label("Clicks once when zoom-in finishes; watches for the next move.")
 local flash={last=nil,minimum=math.huge,descending=false,fired=false}
 flashTab:Toggle({Name="Auto Black Flash",Default=false,Callback=function(on)
     flashOn=on;flash={last=nil,minimum=math.huge,descending=false,fired=false}
@@ -103,17 +104,27 @@ local function updateOtherTimings()
         local cam=world.CurrentCamera
         local fov=cam and cam.FieldOfView
         if type(fov)=="number" then
-            if fov>=65 then flash={last=fov,minimum=fov,descending=false,fired=false}
-            else
-                if flash.last and fov<flash.last-.05 then flash.descending=true end
+            if flash.last then
+                local delta=fov-flash.last
+                if delta<-.05 then flash.descending=true end
                 flash.minimum=math.min(flash.minimum,fov)
-                if flash.descending and flash.minimum<=6.5 and flash.last and fov>flash.last+.05 and not flash.fired then
+                local at20=math.abs(fov-20)<=.15
+                local at6=math.abs(fov-6)<=.15
+                local knownMinimum=math.abs(flash.minimum-20)<=.5 or math.abs(flash.minimum-6)<=.5
+                local stopped=(at20 or at6) and math.abs(delta)<=.015
+                local returning=knownMinimum and delta>.05
+                -- Check before resetting at normal FOV, so a 20 -> 70 snap is caught.
+                local endpoint=(at6 and delta<=0) or stopped or returning
+                if flash.descending and endpoint and not flash.fired then
                     if type(mouse1click)=="function" and not window:IsOpen() then
-                        mouse1click();flash.fired=true;flashStatus:SetText("Black Flash click sent at zoom return.")
+                        mouse1click();flash.fired=true
+                        flashStatus:SetText("Zoom timing click sent; watching for the next move.")
+                        print("[ABA Timings v5] Black Flash zoom click; FOV="..tostring(fov)..", minimum="..tostring(flash.minimum))
                     end
                 end
-                flash.last=fov
             end
+            if fov>=65 then flash={last=fov,minimum=fov,descending=false,fired=false}
+            else flash.minimum=math.min(flash.minimum,fov);flash.last=fov end
         end
     end
     if kokuOn then
