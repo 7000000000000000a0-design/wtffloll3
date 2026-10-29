@@ -8,7 +8,7 @@ if type(httpget) == "function" then source = httpget(url) else source = game:Htt
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
-local window = Nova:CreateWindow({Title="Nanami Timing", Subtitle="Matcha v3", ToggleKey="RightShift", Open=true, Size={500,350}})
+local window = Nova:CreateWindow({Title="ABA Timings", Subtitle="Matcha v4", ToggleKey="RightShift", Open=true, Size={540,410}})
 local tab = window:Tab("Nanami")
 tab:Section("Ratio timing")
 local enabled, alive, clicked = false, true, false
@@ -64,6 +64,86 @@ local function readRatio(bar,cutter)
     local cutSize,cutPos=cutter.AbsoluteSize,cutter.AbsolutePosition
     if size and pos and cutSize and cutPos and size.X>1 then
         return (cutPos.X+cutSize.X*.5-pos.X)/size.X,"screen fallback"
+    end
+end
+-- Other explicit reaction checks found in .RunOnceLocal.
+local flashTab=window:Tab("Black Flash")
+flashTab:Section("BlackFlashCheck")
+local flashOn=false
+local flashStatus=flashTab:Label("Auto Black Flash: OFF")
+flashTab:Label("Unverified cue detection: click when the zoom starts returning.")
+local flash={last=nil,minimum=math.huge,descending=false,fired=false}
+flashTab:Toggle({Name="Auto Black Flash",Default=false,Callback=function(on)
+    flashOn=on;flash={last=nil,minimum=math.huge,descending=false,fired=false}
+    flashStatus:SetText(on and "Waiting for the Black Flash zoom..." or "Auto Black Flash: OFF")
+    if on then window:Toggle(false) end
+end})
+local kokuTab=window:Tab("Kokushibo")
+kokuTab:Section("KokushiboCheck")
+local kokuOn=false
+local kokuStatus=kokuTab:Label("Auto Kokushibo: OFF")
+kokuTab:Label("Unverified cue detection: right-click when eye movement finishes.")
+local koku={gui=nil,positions={},moved=false,stable=0,fired=false}
+kokuTab:Toggle({Name="Auto Kokushibo",Default=false,Callback=function(on)
+    kokuOn=on;koku={gui=nil,positions={},moved=false,stable=0,fired=false}
+    kokuStatus:SetText(on and "Waiting for FrenchKokushibo..." or "Auto Kokushibo: OFF")
+    if on then window:Toggle(false) end
+end})
+local function localX(obj)
+    local ok,x=pcall(function()return obj.Position.X.Scale end)
+    if ok and type(x)=="number" then return x end
+    if positionOffset and type(memory_read)=="function" then
+        local success,value=pcall(function()return memory_read("float",obj.Address+positionOffset)end)
+        if success and type(value)=="number" and value==value then return value end
+    end
+end
+local function updateOtherTimings()
+    if not alive then return end
+    if flashOn then
+        local cam=world.CurrentCamera
+        local fov=cam and cam.FieldOfView
+        if type(fov)=="number" then
+            if fov>=65 then flash={last=fov,minimum=fov,descending=false,fired=false}
+            else
+                if flash.last and fov<flash.last-.05 then flash.descending=true end
+                flash.minimum=math.min(flash.minimum,fov)
+                if flash.descending and flash.minimum<=6.5 and flash.last and fov>flash.last+.05 and not flash.fired then
+                    if type(mouse1click)=="function" and not window:IsOpen() then
+                        mouse1click();flash.fired=true;flashStatus:SetText("Black Flash click sent at zoom return.")
+                    end
+                end
+                flash.last=fov
+            end
+        end
+    end
+    if kokuOn then
+        local player=players.LocalPlayer
+        local pg=player and player:FindFirstChild("PlayerGui")
+        local gui=pg and pg:FindFirstChild("FrenchKokushibo")
+        if not gui then koku={gui=nil,positions={},moved=false,stable=0,fired=false};return end
+        local key=gui.Address or gui
+        if key~=koku.gui then koku={gui=key,positions={},moved=false,stable=0,fired=false} end
+        if koku.fired then return end
+        local changed=false
+        local count=0
+        for _,eye in ipairs(gui:GetChildren())do
+            local x=localX(eye)
+            if x then
+                count=count+1
+                local id=eye.Address or eye
+                local previousX=koku.positions[id]
+                if previousX and math.abs(x-previousX)>.000001 then changed=true end
+                koku.positions[id]=x
+            end
+        end
+        if count==0 then kokuStatus:SetText("Eye positions unavailable in this Matcha build.");return end
+        if changed then koku.moved=true;koku.stable=0
+        elseif koku.moved then koku.stable=koku.stable+1 end
+        if koku.stable>=2 and not window:IsOpen() then
+            if type(mouse2click)=="function" then
+                mouse2click();koku.fired=true;kokuStatus:SetText("Kokushibo right-click sent after eye movement.")
+            else kokuStatus:SetText("This Matcha build has no mouse2click API.") end
+        end
     end
 end
 local function child(parent,name) return parent and parent:FindFirstChild(name) end
@@ -147,6 +227,10 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
     if not ok then
         message("Tracking unavailable; see Matcha output.")
         if tostring(err) ~= lastError then lastError=tostring(err); print("[Nanami Timing] "..lastError) end
+    end
+    local otherOK,otherError=pcall(updateOtherTimings)
+    if not otherOK and tostring(otherError)~=lastError then
+        lastError=tostring(otherError);print("[ABA Timings] "..lastError)
     end
 end)
 print("[Nanami Timing] Loaded. Right Shift shows/hides the menu. Auto Timing defaults to OFF.")
