@@ -8,7 +8,7 @@ if type(httpget) == "function" then source = httpget(url) else source = game:Htt
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
-local window = Nova:CreateWindow({Title="Nanami Timing", Subtitle="Matcha", ToggleKey="RightShift", Open=true, Size={500,350}})
+local window = Nova:CreateWindow({Title="Nanami Timing", Subtitle="Matcha v3", ToggleKey="RightShift", Open=true, Size={500,350}})
 local tab = window:Tab("Nanami")
 tab:Section("Ratio timing")
 local enabled, alive, clicked = false, true, false
@@ -37,6 +37,35 @@ _G.NanamiTimingMatcha=state
 tab:Button({Name="Close and stop", Callback=state.Destroy})
 local players=game:GetService("Players")
 local world=game:GetService("Workspace")
+local armedUntil=0
+local lastKeys={}
+local positionOffset
+-- Matcha's screen coordinates can be unreliable on rotated BillboardGui bars.
+-- The reference script reads the UDim2 X.Scale float instead; never write memory.
+if type(memory_read) == "function" then
+    local ok,data=pcall(function()
+        local body
+        if type(httpget)=="function" then body=httpget("https://offsets.imtheo.lol/Offsets.json")
+        else body=game:HttpGet("https://offsets.imtheo.lol/Offsets.json") end
+        return game:GetService("HttpService"):JSONDecode(body)
+    end)
+    local value=ok and data and data.Offsets and data.Offsets.GuiObject and data.Offsets.GuiObject.Position
+    if type(value)=="string" then value=tonumber(value) end
+    if type(value)=="number" and value>0 and value<8192 and value%4==0 then positionOffset=value end
+end
+local function readRatio(bar,cutter)
+    local ok,value=pcall(function()return cutter.Position.X.Scale end)
+    if ok and type(value)=="number" and value>=0 and value<=1 then return value,"local" end
+    if positionOffset and type(memory_read)=="function" then
+        local success,scale=pcall(function()return memory_read("float",cutter.Address+positionOffset) end)
+        if success and type(scale)=="number" and scale==scale and scale>=0 and scale<=1 then return scale,"cursor" end
+    end
+    local size,pos=bar.AbsoluteSize,bar.AbsolutePosition
+    local cutSize,cutPos=cutter.AbsoluteSize,cutter.AbsolutePosition
+    if size and pos and cutSize and cutPos and size.X>1 then
+        return (cutPos.X+cutSize.X*.5-pos.X)/size.X,"screen fallback"
+    end
+end
 local function child(parent,name) return parent and parent:FindFirstChild(name) end
 local function barsIn(model, results)
     local root=child(model,"HumanoidRootPart")
@@ -65,7 +94,17 @@ local function update()
     if type(mouse1click) ~= "function" then message("This runner has no mouse1click API."); return end
     local player=players.LocalPlayer
     local character=player and player.Character
-    if not character or not character:GetAttribute("NANAMIAIM") then
+    -- Some builds do not expose NANAMIAIM; arm only from the local move keys.
+    local now=tick and tick() or os.clock()
+    if type(iskeypressed)=="function" then
+        for key=0x31,0x34 do
+            local down=iskeypressed(key)==true
+            if down and not lastKeys[key] then armedUntil=now+5 end
+            lastKeys[key]=down
+        end
+    end
+    local aiming=character and character:GetAttribute("NANAMIAIM")
+    if not character or (not aiming and now>armedUntil) then
         prompts={}; message("Waiting for your Nanami move..."); return
     end
     local candidates=locate(character)
@@ -78,10 +117,8 @@ local function update()
         seen[key]=true
         local prompt=prompts[key] or {fired=false}
         prompts[key]=prompt
-        local size,pos=bar.AbsoluteSize,bar.AbsolutePosition
-        local cutSize,cutPos=cutter.AbsoluteSize,cutter.AbsolutePosition
-        if size and pos and cutSize and cutPos and size.X > 1 then
-            local ratio=(cutPos.X+cutSize.X*.5-pos.X)/size.X
+        local ratio,method=readRatio(bar,cutter)
+        if ratio then
             if ratio == ratio and ratio >= -.1 and ratio <= 1.1 then
                 -- A reused GUI can contain multiple timing rounds within one move.
                 if prompt.last and prompt.last >= .65 and ratio < .3 then prompt.fired=false end
@@ -89,8 +126,9 @@ local function update()
                 if not prompt.fired then
                     if window:IsOpen() then
                         message("Hide the menu with Right Shift to resume timing.")
-                    elseif math.abs(ratio-.7) < .02 and not sent then
+                    elseif math.abs(ratio-.7) < .018 and not sent then
                         mouse1click(); prompt.fired=true; sent=true
+                        print("[Nanami Timing v3] Click at "..tostring(ratio).." via "..method)
                         message("Timing click sent; watching for the next prompt...")
                     elseif ratio <= .72 then
                         message("Tracking: "..tostring(math.floor(ratio*100+.5)).."%")
