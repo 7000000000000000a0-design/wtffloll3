@@ -5,11 +5,30 @@ assert(Drawing and type(Drawing.new) == "function", "Matcha Drawing API is requi
 local url = "https://raw.githubusercontent.com/Martinikaws/Nova/88f5bd44551d03d6a01ba07b761519eb3d8ccb34/Nova.lua"
 local source
 if type(httpget) == "function" then source = httpget(url) else source = game:HttpGet(url) end
+local ownedDrawings={}
+local function clearOwnedDrawings()
+    for _,drawing in ipairs(ownedDrawings)do
+        pcall(function()drawing.Visible=false end)
+        pcall(function()drawing.Transparency=0 end)
+        local ok=pcall(function()drawing:Remove()end)
+        if not ok then pcall(function()drawing:Destroy()end)end
+    end
+end
+-- Track only objects created by this copy of Nova, without replacing global Drawing.
+_G.ABATimingOwnedDrawings=ownedDrawings
+source=source:gsub("Drawing%.new","abaOwnedDrawingNew")
+source=[[local abaNativeDrawingNew=Drawing.new
+local abaOwnedDrawings=_G.ABATimingOwnedDrawings
+local function abaOwnedDrawingNew(kind)
+    local object=abaNativeDrawingNew(kind)
+    abaOwnedDrawings[#abaOwnedDrawings+1]=object
+    return object
+end
+]]..source
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
 local state
-local unloadRequested=false
 local window = Nova:CreateWindow({Title="ABA Timings", ToggleKey="RightShift", Open=true, Size={480,380}, OnUnload=function()
     if state then state.Destroy() end
 end})
@@ -21,8 +40,7 @@ if window.SettingsTab and window.SettingsTab.elements then
         if name:find("Mouse offset",1,true)==1 or text:find("Made with Nova",1,true)==1 or name:find("Made with Nova",1,true)==1 then
             table.remove(rows,i)
         elseif name=="Unload" then
-            -- Finish the current menu drawing callback before destroying its pool.
-            rows[i].Callback=function() unloadRequested=true end
+            rows[i].Callback=function() if state then state.Destroy()end end
         end
     end
 end
@@ -46,9 +64,18 @@ state = {}
 function state.Destroy()
     if not alive then return end
     alive=false; enabled=false
-    if connection then connection:Disconnect(); connection=nil end
-    window:Destroy()
+    if connection then pcall(function()connection:Disconnect()end);connection=nil end
+    pcall(function()window:Toggle(false)end)
+    pcall(function()window:Destroy()end)
+    clearOwnedDrawings()
+    -- Also catch any final objects created by a menu frame already in progress.
+    if task and type(task.spawn)=="function" then
+        task.spawn(function()
+            for _=1,3 do task.wait();clearOwnedDrawings() end
+        end)
+    end
     if _G.NanamiTimingMatcha == state then _G.NanamiTimingMatcha=nil end
+    if _G.ABATimingOwnedDrawings==ownedDrawings then _G.ABATimingOwnedDrawings=nil end
 end
 _G.NanamiTimingMatcha=state
 
@@ -289,7 +316,6 @@ local function update()
 end
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     if not alive then return end
-    if unloadRequested then state.Destroy();return end
     local ok,err=pcall(update)
     if not ok then
         message("Tracking unavailable; see Matcha output.")
