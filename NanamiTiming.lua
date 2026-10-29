@@ -12,17 +12,20 @@ local window = Nova:CreateWindow({Title="Nanami Timing", Subtitle="Matcha", Togg
 local tab = window:Tab("Nanami")
 tab:Section("Ratio timing")
 local enabled, alive, clicked = false, true, false
-local activeGUI, connection, lastStatus, lastError
+local prompts = {}
+local connection, lastStatus, lastError
 local status = tab:Label("Auto Timing: OFF")
 local function message(text)
     if text ~= lastStatus then lastStatus=text; status:SetText(text) end
 end
 tab:Toggle({Name="Auto Timing", Default=false, Callback=function(on)
-    enabled=on; activeGUI=nil; clicked=false
+    enabled=on; prompts={}; clicked=false
     message(on and "Waiting for your Nanami move..." or "Auto Timing: OFF")
+    if on then window:Toggle(false) end
 end})
 tab:Label("Right Shift: show / hide this menu")
-tab:Label("Enable the toggle, hide the menu, then use your move.")
+tab:Label("Enable once, then use your moves. Every new prompt is timed.")
+tab:Label("Enabling automatically hides this menu.")
 local state = {}
 function state.Destroy()
     alive=false; enabled=false
@@ -35,27 +38,27 @@ tab:Button({Name="Close and stop", Callback=state.Destroy})
 local players=game:GetService("Players")
 local world=game:GetService("Workspace")
 local function child(parent,name) return parent and parent:FindFirstChild(name) end
-local function barIn(model)
+local function barsIn(model, results)
     local root=child(model,"HumanoidRootPart")
     if not root then return end
     for _,gui in ipairs(root:GetChildren()) do
         if gui.Name == "NanamiCutGUI" then
             local bar=child(gui,"MainBar")
             local cutter=child(bar,"Cutter")
-            if bar and cutter then return gui,bar,cutter end
+            if bar and cutter then results[#results+1]={gui=gui,bar=bar,cutter=cutter} end
         end
     end
 end
 local function locate(character)
-    local gui,bar,cutter=barIn(character)
-    if gui then return gui,bar,cutter end
+    local results={}
+    barsIn(character,results)
     local live=child(world,"Live")
     if live then
         for _,model in ipairs(live:GetChildren()) do
-            gui,bar,cutter=barIn(model)
-            if gui then return gui,bar,cutter end
+            if model ~= character then barsIn(model,results) end
         end
     end
+    return results
 end
 local function update()
     if not enabled or not alive then return end
@@ -63,27 +66,42 @@ local function update()
     local player=players.LocalPlayer
     local character=player and player.Character
     if not character or not character:GetAttribute("NANAMIAIM") then
-        activeGUI=nil; clicked=false; message("Waiting for your Nanami move..."); return
+        prompts={}; message("Waiting for your Nanami move..."); return
     end
-    local gui,bar,cutter=locate(character)
-    if not gui then message("Waiting for the game's ratio bar..."); return end
-    if gui ~= activeGUI then activeGUI=gui; clicked=false end
-    if clicked then return end
-    local size,pos=bar.AbsoluteSize,bar.AbsolutePosition
-    local cutSize,cutPos=cutter.AbsoluteSize,cutter.AbsolutePosition
-    if not size or not pos or not cutSize or not cutPos or size.X <= 1 then
-        message("Ratio bar screen coordinates unavailable."); return
+    local candidates=locate(character)
+    local seen={}
+    local sent=false
+    if #candidates == 0 then message("Waiting for the game's ratio bar...") end
+    for _,candidate in ipairs(candidates) do
+        local gui,bar,cutter=candidate.gui,candidate.bar,candidate.cutter
+        local key=gui.Address or gui
+        seen[key]=true
+        local prompt=prompts[key] or {fired=false}
+        prompts[key]=prompt
+        local size,pos=bar.AbsoluteSize,bar.AbsolutePosition
+        local cutSize,cutPos=cutter.AbsoluteSize,cutter.AbsolutePosition
+        if size and pos and cutSize and cutPos and size.X > 1 then
+            local ratio=(cutPos.X+cutSize.X*.5-pos.X)/size.X
+            if ratio == ratio and ratio >= -.1 and ratio <= 1.1 then
+                -- A reused GUI can contain multiple timing rounds within one move.
+                if prompt.last and prompt.last >= .65 and ratio < .3 then prompt.fired=false end
+                prompt.last=ratio
+                if not prompt.fired then
+                    if window:IsOpen() then
+                        message("Hide the menu with Right Shift to resume timing.")
+                    elseif math.abs(ratio-.7) < .02 and not sent then
+                        mouse1click(); prompt.fired=true; sent=true
+                        message("Timing click sent; watching for the next prompt...")
+                    elseif ratio <= .72 then
+                        message("Tracking: "..tostring(math.floor(ratio*100+.5)).."%")
+                    end
+                end
+            end
+        else
+            message("Ratio bar screen coordinates unavailable.")
+        end
     end
-    local ratio=(cutPos.X+cutSize.X*.5-pos.X)/size.X
-    if ratio ~= ratio or ratio < -.1 or ratio > 1.1 then return end
-    if window:IsOpen() then message("Press Right Shift to hide the menu before timing."); return end
-    if math.abs(ratio-.7) < .02 then
-        clicked=true; mouse1click(); message("Timing click sent at "..tostring(math.floor(ratio*100+.5)).."%")
-    elseif ratio > .72 then
-        message("Window passed; waiting for your next move.")
-    else
-        message("Tracking: "..tostring(math.floor(ratio*100+.5)).."%")
-    end
+    for key in pairs(prompts) do if not seen[key] then prompts[key]=nil end end
 end
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     if not alive then return end
