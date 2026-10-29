@@ -22,18 +22,23 @@ local wheelSource=table.concat({
     "                if math.atan2 then angle = math.atan2(dy, dx) else angle = math.atan(dy, dx) end",
     "                return (angle / (math.pi * 2)) % 1",
     "            end",
-    "            local cell = 7",
+    "            local wheelDrawn=opts.ColorWheelImage and picture(el.id..\":wheel-art\",opts.ColorWheelImage,cx-radius,cy-radius,radius*2,radius*2,22)",
+    "            if not wheelDrawn then",
+    "            local cell = 3",
     "            for gy = -radius, radius, cell do",
     "                for gx = -radius, radius, cell do",
     "                    local dx, dy = gx + cell / 2, gy + cell / 2",
     "                    local distance = math.sqrt(dx * dx + dy * dy)",
     "                    if distance <= radius then",
-    "                        rect(cx + gx, cy + gy, cell + 1, cell + 1,",
+    "                        local halfWidth=math.sqrt(math.max(0,radius*radius-dy*dy))",
+    "                        local left=math.max(gx,-halfWidth)",
+    "                        local right=math.min(gx+cell,halfWidth)",
+    "                        rect(cx + left, cy + gy, right-left, cell,",
     "                            fromHSV(hue(dx, dy), distance / radius, 1), 22, 0)",
     "                    end",
     "                end",
     "            end",
-    "            circle(cx, cy, radius + 1, C.line, 23, false, 2)",
+    "            end",
     "            local angle = hsv[1] * math.pi * 2",
     "            local sx, sy = cx + math.cos(angle) * hsv[2] * radius, cy + math.sin(angle) * hsv[2] * radius",
     "            circle(sx, sy, 5, RGB(0, 0, 0), 24, false, 3)",
@@ -67,16 +72,29 @@ local wheelSource=table.concat({
     "                else drag = nil end",
     "            end",
     "            local hx, hy, hw = px + 12, py + 177, pw - 24",
-    "            local focused = focus == el.id",
-    "            rect(hx, hy, hw, 28, C.card, 22, 5)",
-    "            border(hx, hy, hw, 28, focused and C.accent or C.line, 23, 5)",
-    "            mtext(focused and focusValue or (\"#\" .. colorToHex(el.Value)), hx + 8, hy + 14, C.text, 13, 24)",
-    "            rect(hx + hw - 32, hy + 6, 24, 16, el.Value, 24, 3)",
-    "            if clicked(hx, hy, hw, 28, true) and not focused then",
-    "                blur(); focus, focusValue = el.id, \"\"",
-    "                focusCommit = function(value)",
-    "                    local color = hexToColor(value)",
-    "                    if color then el:Set(color); el.hsv = {toHSV(el.Value)} end",
+    "            local fieldWidth=(hw-12)/3",
+    "            local labels={\"R\",\"G\",\"B\"}",
+    "            for channel=1,3 do",
+    "                local index=channel",
+    "                local id=el.id..\":rgb\"..index",
+    "                local fx=hx+(index-1)*(fieldWidth+6)",
+    "                local focused=focus==id",
+    "                local values={el.Value.R,el.Value.G,el.Value.B}",
+    "                local value=math.floor(clamp(values[index],0,1)*255+.5)",
+    "                rect(fx,hy,fieldWidth,28,C.card,22,5)",
+    "                border(fx,hy,fieldWidth,28,focused and C.accent or C.line,23,5)",
+    "                mtext(labels[index],fx+6,hy+14,C.dim,12,24)",
+    "                mtext(focused and focusValue or tostring(value),fx+23,hy+14,C.text,13,24)",
+    "                if clicked(fx,hy,fieldWidth,28,true) and not focused then",
+    "                    blur();focus,focusValue=id,tostring(value)",
+    "                    focusCommit=function(text)",
+    "                        local number=tonumber(text)",
+    "                        if not number then return end",
+    "                        local rgb={el.Value.R,el.Value.G,el.Value.B}",
+    "                        rgb[index]=math.floor(clamp(number,0,255)+.5)/255",
+    "                        el:Set(Color3.new(rgb[1],rgb[2],rgb[3]))",
+    "                        el.hsv={toHSV(el.Value)}",
+    "                    end",
     "                end",
     "            end",
     "            return {x = px, y = py, w = pw, h = ph}",
@@ -145,8 +163,13 @@ source=table.concat({
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
+local colorWheelImage
+pcall(function()
+    local wheelURL="https://raw.githubusercontent.com/7000000000000000a0-design/wtffloll3/main/assets/color-wheel.png"
+    if type(httpget)=="function" then colorWheelImage=httpget(wheelURL)else colorWheelImage=game:HttpGet(wheelURL)end
+end)
 local state
-local window = Nova:CreateWindow({Title="hahahahahaha", Folder="hahahahahaha", ConfigName="menu-colors", ToggleKey="RightShift", Open=true, Size={480,380}, OnUnload=function()
+local window = Nova:CreateWindow({Title="hahahahahaha", ColorWheelImage=colorWheelImage, Folder="hahahahahaha", ConfigName="menu-colors", ToggleKey="RightShift", Open=true, Size={480,380}, OnUnload=function()
     if state then state.Destroy() end
 end})
 if window.SettingsTab and window.SettingsTab.elements then
