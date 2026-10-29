@@ -8,25 +8,24 @@ if type(httpget) == "function" then source = httpget(url) else source = game:Htt
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
-local window = Nova:CreateWindow({Title="ABA Timings", Subtitle="Matcha v7", ToggleKey="RightShift", Open=true, Size={560,500}})
+local window = Nova:CreateWindow({Title="ABA Timings", ToggleKey="RightShift", Open=true, Size={480,380}})
 local tab = window:Tab("Timings")
-tab:Section("Nanami")
+
 local enabled, alive, clicked = false, true, false
 local lastNanamiClick=-math.huge
 local prompts = {}
 local connection, lastStatus, lastError
-local status = tab:Label("Auto Nanami: OFF")
+
 local function message(text)
-    if text ~= lastStatus then lastStatus=text; status:SetText(text) end
+    if text ~= lastStatus then lastStatus=text;  end
 end
 tab:Toggle({Name="Auto Nanami", Default=false, Callback=function(on)
     enabled=on; prompts={}; clicked=false
     message(on and "Waiting for your Nanami move..." or "Auto Nanami: OFF")
     if on then window:Toggle(false) end
 end})
-tab:Label("Right Shift: show / hide this menu")
-tab:Label("Enable once, then use your moves. Every new prompt is timed.")
-tab:Label("Enabling automatically hides this menu.")
+
+
 local state = {}
 function state.Destroy()
     alive=false; enabled=false
@@ -35,7 +34,7 @@ function state.Destroy()
     if _G.NanamiTimingMatcha == state then _G.NanamiTimingMatcha=nil end
 end
 _G.NanamiTimingMatcha=state
-tab:Button({Name="Close and stop", Callback=state.Destroy})
+
 local players=game:GetService("Players")
 local world=game:GetService("Workspace")
 local armedUntil=0
@@ -69,15 +68,14 @@ local function readRatio(bar,cutter)
 end
 -- Other explicit reaction checks found in .RunOnceLocal.
 local flashTab=tab
-flashTab:Section("Yuji / Todo / TS Law")
-local flashStatus=flashTab:Label("Character timing toggles are below.")
+
 local flash={last=nil,minimum=math.huge,descending=false,fired=false}
 local characterTimings={Yuji=false,Todo=false,["TS Law"]=false}
 local characterOverride="Auto"
 local m1Cooldown,quietAfterNanami=.2,.6
 local lastProfileClick=-math.huge
 local detectedCharacter,nextCharacterScan=nil,0
-local profileStatus=flashTab:Label("Character: Auto (not detected)")
+
 for _,name in ipairs({"Yuji","Todo","TS Law"})do
     local characterName=name
     flashTab:Toggle({Name="Auto "..characterName,Default=false,Callback=function(on)
@@ -86,13 +84,9 @@ for _,name in ipairs({"Yuji","Todo","TS Law"})do
         if on then window:Toggle(false) end
     end})
 end
-flashTab:Dropdown({Name="Character",Options={"Auto","Yuji","Todo","TS Law"},Default="Auto",Callback=function(value)
-    characterOverride=value
-end})
-flashTab:Label("Yuji / Todo / TS Law: click on FOV return, as in the reference.")
-flashTab:Label("If Auto cannot detect your character, pin it in Character.")
-flashTab:Slider({Name="Character click cooldown",Min=.05,Max=1,Default=.2,Increment=.01,Suffix=" s",Callback=function(v)m1Cooldown=v end})
-flashTab:Slider({Name="Pause after Nanami cut",Min=0,Max=2,Default=.6,Increment=.05,Suffix=" s",Callback=function(v)quietAfterNanami=v end})
+
+
+
 local function characterFrom(value)
     if type(value)~="string" then return end
     local text=value:lower():gsub("[%s_%-]","")
@@ -103,7 +97,7 @@ end
 local function enabledCharacterProfile(now)
     if not (characterTimings.Yuji or characterTimings.Todo or characterTimings["TS Law"])then return false end
     if characterOverride~="Auto" then
-        profileStatus:SetText("Character: "..characterOverride.." (pinned)")
+        
         return characterTimings[characterOverride]==true
     end
     if now>=nextCharacterScan then
@@ -124,19 +118,18 @@ local function enabledCharacterProfile(now)
             end
         end
     end
-    profileStatus:SetText(detectedCharacter and ("Character: "..detectedCharacter.." (detected)") or "Character unknown: any enabled profile applies")
+    
     if detectedCharacter then return characterTimings[detectedCharacter]==true end
     return true
 end
 local kokuTab=tab
-kokuTab:Section("KokushiboCheck")
+
 local kokuOn=false
-local kokuStatus=kokuTab:Label("Auto Kokushibo: OFF")
-kokuTab:Label("Unverified cue detection: right-click when eye movement finishes.")
+
 local koku={gui=nil,positions={},moved=false,stable=0,fired=false}
 kokuTab:Toggle({Name="Auto Kokushibo",Default=false,Callback=function(on)
     kokuOn=on;koku={gui=nil,positions={},moved=false,stable=0,fired=false}
-    kokuStatus:SetText(on and "Waiting for FrenchKokushibo..." or "Auto Kokushibo: OFF")
+    
     if on then window:Toggle(false) end
 end})
 local function localX(obj)
@@ -166,8 +159,8 @@ local function updateOtherTimings()
                     if ready and type(mouse1click)=="function" and not window:IsOpen() then
                         mouse1click();flash.fired=true
                         lastProfileClick=now
-                        flashStatus:SetText("Zoom timing click sent; watching for the next move.")
-                        print("[ABA Timings v6] Black Flash zoom click; FOV="..tostring(fov)..", minimum="..tostring(flash.minimum))
+                        
+                        print("[ABA Timings v8] Black Flash zoom click; FOV="..tostring(fov)..", minimum="..tostring(flash.minimum))
                     end
                 end
             end
@@ -195,13 +188,13 @@ local function updateOtherTimings()
                 koku.positions[id]=x
             end
         end
-        if count==0 then kokuStatus:SetText("Eye positions unavailable in this Matcha build.");return end
+        if count==0 then ;return end
         if changed then koku.moved=true;koku.stable=0
         elseif koku.moved then koku.stable=koku.stable+1 end
         if koku.stable>=2 and not window:IsOpen() then
             if type(mouse2click)=="function" then
-                mouse2click();koku.fired=true;kokuStatus:SetText("Kokushibo right-click sent after eye movement.")
-            else kokuStatus:SetText("This Matcha build has no mouse2click API.") end
+                mouse2click();koku.fired=true;
+            else  end
         end
     end
 end
@@ -293,4 +286,4 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
         lastError=tostring(otherError);print("[ABA Timings] "..lastError)
     end
 end)
-print("[ABA Timings v7] Loaded. Open Timings for all five toggles. Right Shift shows/hides the menu.")
+print("[ABA Timings v8] Loaded. Open Timings for all five toggles. Right Shift shows/hides the menu.")
