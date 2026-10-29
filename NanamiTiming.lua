@@ -17,14 +17,16 @@ end
 -- Track only objects created by this copy of Nova, without replacing global Drawing.
 _G.ABATimingOwnedDrawings=ownedDrawings
 source=source:gsub("Drawing%.new","abaOwnedDrawingNew")
-source=[[local abaNativeDrawingNew=Drawing.new
-local abaOwnedDrawings=_G.ABATimingOwnedDrawings
-local function abaOwnedDrawingNew(kind)
-    local object=abaNativeDrawingNew(kind)
-    abaOwnedDrawings[#abaOwnedDrawings+1]=object
-    return object
-end
-]]..source
+source=table.concat({
+    "local abaNativeDrawingNew=Drawing.new",
+    "local abaOwnedDrawings=_G.ABATimingOwnedDrawings",
+    "local function abaOwnedDrawingNew(kind)",
+    "    local object=abaNativeDrawingNew(kind)",
+    "    abaOwnedDrawings[#abaOwnedDrawings+1]=object",
+    "    return object",
+    "end",
+    "",
+}, "\n")..source
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
