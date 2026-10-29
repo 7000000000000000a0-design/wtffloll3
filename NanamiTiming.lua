@@ -8,7 +8,20 @@ if type(httpget) == "function" then source = httpget(url) else source = game:Htt
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
-local window = Nova:CreateWindow({Title="ABA Timings", ToggleKey="RightShift", Open=true, Size={480,380}})
+local state
+local window = Nova:CreateWindow({Title="ABA Timings", ToggleKey="RightShift", Open=true, Size={480,380}, OnUnload=function()
+    if state then state.Destroy() end
+end})
+if window.SettingsTab and window.SettingsTab.elements then
+    local rows=window.SettingsTab.elements
+    for i=#rows,1,-1 do
+        local name=tostring(rows[i].Name or "")
+        local text=tostring(rows[i].Text or "")
+        if name:find("Mouse offset",1,true)==1 or text:find("Made with Nova",1,true)==1 or name:find("Made with Nova",1,true)==1 then
+            table.remove(rows,i)
+        end
+    end
+end
 local tab = window:Tab("Timings")
 
 local enabled, alive, clicked = false, true, false
@@ -22,12 +35,12 @@ end
 tab:Toggle({Name="Auto Nanami", Default=false, Callback=function(on)
     enabled=on; prompts={}; clicked=false
     message(on and "Waiting for your Nanami move..." or "Auto Nanami: OFF")
-    if on then window:Toggle(false) end
 end})
 
 
-local state = {}
+state = {}
 function state.Destroy()
+    if not alive then return end
     alive=false; enabled=false
     if connection then connection:Disconnect(); connection=nil end
     window:Destroy()
@@ -81,7 +94,6 @@ for _,name in ipairs({"Yuji","Todo","TS Law"})do
     flashTab:Toggle({Name="Auto "..characterName,Default=false,Callback=function(on)
         characterTimings[characterName]=on
         flash={last=nil,minimum=math.huge,descending=false,fired=false}
-        if on then window:Toggle(false) end
     end})
 end
 
@@ -130,7 +142,6 @@ local koku={gui=nil,positions={},moved=false,stable=0,fired=false}
 kokuTab:Toggle({Name="Auto Kokushibo",Default=false,Callback=function(on)
     kokuOn=on;koku={gui=nil,positions={},moved=false,stable=0,fired=false}
     
-    if on then window:Toggle(false) end
 end})
 local function localX(obj)
     local ok,x=pcall(function()return obj.Position.X.Scale end)
@@ -156,7 +167,7 @@ local function updateOtherTimings()
                 local endpoint=delta>.0001
                 if flash.descending and endpoint and not flash.fired then
                     local ready=now-lastProfileClick>=m1Cooldown and now-lastNanamiClick>=quietAfterNanami
-                    if ready and type(mouse1click)=="function" and not window:IsOpen() then
+                    if ready and type(mouse1click)=="function" then
                         mouse1click();flash.fired=true
                         lastProfileClick=now
                         
@@ -191,7 +202,7 @@ local function updateOtherTimings()
         if count==0 then return end
         if changed then koku.moved=true;koku.stable=0
         elseif koku.moved then koku.stable=koku.stable+1 end
-        if koku.stable>=2 and not window:IsOpen() then
+        if koku.stable>=2 then
             if type(mouse2click)=="function" then
                 mouse2click();koku.fired=true
             end
@@ -256,9 +267,7 @@ local function update()
                 if prompt.last and prompt.last >= .65 and ratio < .3 then prompt.fired=false end
                 prompt.last=ratio
                 if not prompt.fired then
-                    if window:IsOpen() then
-                        message("Hide the menu with Right Shift to resume timing.")
-                    elseif math.abs(ratio-.7) < .018 and not sent then
+                    if math.abs(ratio-.7) < .018 and not sent then
                         mouse1click(); prompt.fired=true; sent=true
                         lastNanamiClick=tick and tick() or os.clock()
                         print("[Nanami Timing v3] Click at "..tostring(ratio).." via "..method)
