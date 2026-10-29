@@ -9,6 +9,7 @@ local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
 local state
+local unloadRequested=false
 local window = Nova:CreateWindow({Title="ABA Timings", ToggleKey="RightShift", Open=true, Size={480,380}, OnUnload=function()
     if state then state.Destroy() end
 end})
@@ -19,6 +20,9 @@ if window.SettingsTab and window.SettingsTab.elements then
         local text=tostring(rows[i].Text or "")
         if name:find("Mouse offset",1,true)==1 or text:find("Made with Nova",1,true)==1 or name:find("Made with Nova",1,true)==1 then
             table.remove(rows,i)
+        elseif name=="Unload" then
+            -- Finish the current menu drawing callback before destroying its pool.
+            rows[i].Callback=function() unloadRequested=true end
         end
     end
 end
@@ -285,6 +289,7 @@ local function update()
 end
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     if not alive then return end
+    if unloadRequested then state.Destroy();return end
     local ok,err=pcall(update)
     if not ok then
         message("Tracking unavailable; see Matcha output.")
