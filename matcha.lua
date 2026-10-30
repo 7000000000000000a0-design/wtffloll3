@@ -492,7 +492,8 @@ local macrosTab=window:Tab("Macros")
 local macrosOn=false
 local gojoOn=false
 local aizenOn=true
-local aizenToggle,gojoToggle
+local aizenToggle,gojoToggle,dioToggle
+local dioOn=false
 local macroBusy=false
 local macroHeldKeys={}
 local macroError
@@ -532,6 +533,10 @@ end
 macrosTab:Section("Aizen Macros")
 aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=true,Callback=function(on)
     aizenOn=on
+    if on and dioOn then
+        dioOn=false
+        if dioToggle then dioToggle:Set(false) end
+    end
     if on and gojoOn then
         gojoOn=false
         if gojoToggle then gojoToggle:Set(false) end
@@ -574,6 +579,10 @@ end
 macrosTab:Section("Gojo Macros")
 gojoToggle=macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Callback=function(on)
     gojoOn=on
+    if on and dioOn then
+        dioOn=false
+        if dioToggle then dioToggle:Set(false) end
+    end
     if on and aizenOn then
         aizenOn=false
         if aizenToggle then aizenToggle:Set(false) end
@@ -583,7 +592,7 @@ local gojoBindings={
     {name="TP + Pull Blue",key="Z",steps={{0x33,.072},{0x33,.020},{0x51,0}}},
     {name="Instant Blue TP",key="T",steps={{0x33,.092},{0x51,0}}},
     {name="Purple Combo",key="MButton",steps={{0x33,.010},{0x32,1.550},{0x20,0},{0x51,0}}},
-    {name="Pre Blue",key="V",steps={{0x33,.020},{0x51,0}}},
+    {name="TP + Blue (blue)",key="V",steps={{0x33,.020},{0x51,0}}},
 }
 local function runGojoMacro(selected)
     if not alive or not macrosOn or not gojoOn or macroBusy or not macroFocused() then return end
@@ -616,6 +625,57 @@ for index,binding in ipairs(gojoBindings)do
         Callback=function() runGojoMacro(selected) end,
     })
 end
+
+
+macrosTab:Section("DIO Macros")
+dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Callback=function(on)
+    dioOn=on
+    if on then
+        aizenOn=false;gojoOn=false
+        if aizenToggle then aizenToggle:Set(false) end
+        if gojoToggle then gojoToggle:Set(false) end
+    end
+end})
+local function runDioMacro(uptilt)
+    if not alive or not macrosOn or not dioOn or macroBusy or not macroFocused() then return end
+    if not macroReady() or type(mouse1press)~="function" or type(mouse1release)~="function" then
+        macroReport("DIO requires mouse1press and mouse1release plus the keyboard macro APIs.")
+        return
+    end
+    macroBusy=true
+    task.spawn(function()
+        local mouseHeld,spaceHeld=false,false
+        local function active() return alive and macrosOn and dioOn and macroFocused() end
+        local ok,err=pcall(function()
+            if not active() then return end
+            mouseHeld=true;mouse1press()
+            if uptilt then
+                task.wait(.230)
+                if not active() then return end
+                spaceHeld=true;keypress(0x20)
+                task.wait(.210)
+                if not active() then return end
+                macroTap(0x33)
+            else
+                mouse1release();mouseHeld=false
+                task.wait(.005)
+                if not active() then return end
+                macroTap(0x33)
+            end
+        end)
+        if spaceHeld then pcall(keyrelease,0x20) end
+        if mouseHeld then pcall(mouse1release) end
+        for vk in pairs(macroHeldKeys)do
+            pcall(keyrelease,vk);macroHeldKeys[vk]=nil
+        end
+        macroBusy=false
+        if not ok then macroReport(tostring(err)) end
+    end)
+end
+macrosTab:Keybind({Name="Uptilt",Default="X",Flag="dio_uptilt_key",Mode="Press",
+    Callback=function() runDioMacro(true) end})
+macrosTab:Keybind({Name="Downtilt",Default="C",Flag="dio_downtilt_key",Mode="Press",
+    Callback=function() runDioMacro(false) end})
 
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     if not alive then return end
