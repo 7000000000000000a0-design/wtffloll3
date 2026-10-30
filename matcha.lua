@@ -232,6 +232,8 @@ source=table.concat({
     "end",
     "",
 }, "\n")..source
+-- Let Nova display, save and capture the Gojo middle-mouse shortcut.
+source=source:gsub("local KEY_NAME = {}", 'VK.MButton=0x04\nKEY_LABEL[0x04]="Middle Mouse"\nlocal KEY_NAME = {}',1)
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
@@ -488,6 +490,7 @@ end
 -- Lua equivalent of x.ahk. All key codes below are Windows virtual-key codes.
 local macrosTab=window:Tab("Macros")
 local macrosOn=false
+local gojoOn=false
 local macroBusy=false
 local macroHeldKeys={}
 local macroError
@@ -528,7 +531,7 @@ local function macroTap(vk)
     macroHeldKeys[vk]=nil
 end
 local function runMacro(selected)
-    if not alive or not macrosOn or macroBusy or not macroFocused() then return end
+    if not alive or not macrosOn or gojoOn or macroBusy or not macroFocused() then return end
     if not macroReady() then
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
         return
@@ -536,10 +539,10 @@ local function runMacro(selected)
     macroBusy=true
     task.spawn(function()
         local ok,err=pcall(function()
-            if not alive or not macrosOn or not macroFocused() then return end
+            if not alive or not macrosOn or gojoOn or not macroFocused() then return end
             macroTap(selected.first)
             task.wait(selected.delay)
-            if alive and macrosOn and macroFocused() then macroTap(selected.second) end
+            if alive and macrosOn and not gojoOn and macroFocused() then macroTap(selected.second) end
         end)
         for vk in pairs(macroHeldKeys)do
             pcall(keyrelease,vk)
@@ -557,6 +560,50 @@ for index,binding in ipairs(macroBindings)do
         Flag="macro_sequence_"..tostring(index),
         Mode="Press",
         Callback=function() runMacro(selected) end,
+    })
+end
+
+
+macrosTab:Section({Name="Gojo Macros"})
+macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Callback=function(on)
+    gojoOn=on
+end})
+macrosTab:Label({Text="Enable Macros must be ON. Gojo mode pauses original macros."})
+local gojoBindings={
+    {name="TP + Pull Blue",key="Z",steps={{0x33,.072},{0x33,.020},{0x51,0}}},
+    {name="Instant Blue TP",key="T",steps={{0x33,.092},{0x51,0}}},
+    {name="Purple Combo",key="MButton",steps={{0x33,.010},{0x32,1.550},{0x20,0},{0x51,0}}},
+    {name="TP + Blue (preblue first)",key="V",steps={{0x33,.020},{0x51,0}}},
+}
+local function runGojoMacro(selected)
+    if not alive or not macrosOn or not gojoOn or macroBusy or not macroFocused() then return end
+    if not macroReady() then
+        macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
+        return
+    end
+    macroBusy=true
+    task.spawn(function()
+        local ok,err=pcall(function()
+            for _,step in ipairs(selected.steps)do
+                if not alive or not macrosOn or not gojoOn or not macroFocused() then return end
+                macroTap(step[1])
+                if step[2]>0 then task.wait(step[2]) end
+            end
+        end)
+        for vk in pairs(macroHeldKeys)do
+            pcall(keyrelease,vk)
+            macroHeldKeys[vk]=nil
+        end
+        macroBusy=false
+        if not ok then macroReport(tostring(err)) end
+    end)
+end
+for index,binding in ipairs(gojoBindings)do
+    local selected=binding
+    macrosTab:Keybind({
+        Name=selected.name,Default=selected.key,
+        Flag="gojo_macro_sequence_"..tostring(index),Mode="Press",
+        Callback=function() runGojoMacro(selected) end,
     })
 end
 
