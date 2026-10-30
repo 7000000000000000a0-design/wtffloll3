@@ -516,41 +516,75 @@ end
 local function macroReport(text)
     if macroError~=text then macroError=text;print("[Macros] "..text) end
 end
-local macroNoticeText,macroNoticeBackground
+local macroNotice
 local macroNoticeUntil=0
+local function noticeDrawing(kind,props)
+    local object=Drawing.new(kind)
+    ownedDrawings[#ownedDrawings+1]=object
+    for key,value in pairs(props)do object[key]=value end
+    return object
+end
 local function showMacroNotice(on)
-    if not macroNoticeText then
-        macroNoticeBackground=Drawing.new("Square")
-        ownedDrawings[#ownedDrawings+1]=macroNoticeBackground
-        macroNoticeBackground.Filled=true
-        macroNoticeBackground.Color=Color3.fromRGB(30,24,38)
-        macroNoticeBackground.Transparency=.9
-        macroNoticeBackground.ZIndex=1000
-        macroNoticeText=Drawing.new("Text")
-        ownedDrawings[#ownedDrawings+1]=macroNoticeText
-        macroNoticeText.Size=20
-        macroNoticeText.Center=true
-        macroNoticeText.Outline=true
-        macroNoticeText.Transparency=1
-        macroNoticeText.ZIndex=1001
+    if not macroNotice then
+        macroNotice={parts={}}
+        local function background(kind)
+            local object=noticeDrawing(kind,{
+                Filled=true,Color=Color3.fromRGB(16,16,20),
+                Transparency=1,ZIndex=1000,Visible=false,
+            })
+            macroNotice.parts[#macroNotice.parts+1]=object
+            return object
+        end
+        macroNotice.horizontal=background("Square")
+        macroNotice.vertical=background("Square")
+        macroNotice.corners={}
+        for i=1,4 do
+            local corner=background("Circle")
+            corner.Radius=10
+            corner.NumSides=24
+            macroNotice.corners[i]=corner
+        end
+        macroNotice.dot=noticeDrawing("Circle",{
+            Filled=true,Radius=3,NumSides=16,Color=Color3.fromRGB(235,235,240),
+            Transparency=1,ZIndex=1001,Visible=false,
+        })
+        macroNotice.title=noticeDrawing("Text",{
+            Text="Matcha",Size=13,Font=2,Center=false,Outline=false,
+            Color=Color3.fromRGB(240,240,245),Transparency=1,ZIndex=1001,Visible=false,
+        })
+        macroNotice.text=noticeDrawing("Text",{
+            Size=13,Font=2,Center=false,Outline=false,
+            Color=Color3.fromRGB(150,150,160),Transparency=1,ZIndex=1001,Visible=false,
+        })
+        macroNotice.parts[#macroNotice.parts+1]=macroNotice.dot
+        macroNotice.parts[#macroNotice.parts+1]=macroNotice.title
+        macroNotice.parts[#macroNotice.parts+1]=macroNotice.text
     end
-    macroNoticeText.Text=on and "Macro is ON" or "Macro is OFF"
-    macroNoticeText.Color=on and Color3.fromRGB(110,240,155) or Color3.fromRGB(255,135,135)
+    macroNotice.text.Text=on and "Macro is ON" or "Macro is OFF"
     macroNoticeUntil=(tick and tick() or os.clock())+2
 end
 local function updateMacroNotice()
-    if not macroNoticeText then return end
+    if not macroNotice then return end
     local visible=alive and (tick and tick() or os.clock())<macroNoticeUntil
     local camera=world.CurrentCamera
     local size=camera and camera.ViewportSize
     if not size or size.X<=0 then visible=false end
     if visible then
-        macroNoticeBackground.Size=Vector2.new(200,40)
-        macroNoticeBackground.Position=Vector2.new(size.X/2-100,24)
-        macroNoticeText.Position=Vector2.new(size.X/2,32)
+        local width,height,radius=244,38,10
+        local x,y=math.max(0,size.X-width-16),16
+        macroNotice.horizontal.Position=Vector2.new(x+radius,y)
+        macroNotice.horizontal.Size=Vector2.new(width-radius*2,height)
+        macroNotice.vertical.Position=Vector2.new(x,y+radius)
+        macroNotice.vertical.Size=Vector2.new(width,height-radius*2)
+        macroNotice.corners[1].Position=Vector2.new(x+radius,y+radius)
+        macroNotice.corners[2].Position=Vector2.new(x+width-radius,y+radius)
+        macroNotice.corners[3].Position=Vector2.new(x+radius,y+height-radius)
+        macroNotice.corners[4].Position=Vector2.new(x+width-radius,y+height-radius)
+        macroNotice.dot.Position=Vector2.new(x+14,y+height/2)
+        macroNotice.title.Position=Vector2.new(x+25,y+11)
+        macroNotice.text.Position=Vector2.new(x+89,y+11)
     end
-    macroNoticeBackground.Visible=visible
-    macroNoticeText.Visible=visible
+    for _,object in ipairs(macroNotice.parts)do object.Visible=visible end
 end
 macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mode="Press",Callback=function()
     if not alive or not macroFocused() then return end
