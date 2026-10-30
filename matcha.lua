@@ -564,7 +564,7 @@ for index,binding in ipairs(macroBindings)do
 end
 
 
-macrosTab:Section({Name="Gojo Macros"})
+macrosTab:Section("Gojo Macros")
 macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Callback=function(on)
     gojoOn=on
 end})
