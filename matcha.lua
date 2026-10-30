@@ -484,8 +484,83 @@ local function update()
     end
     for key in pairs(prompts) do if not seen[key] then prompts[key]=nil end end
 end
+
+-- Lua equivalent of x.ahk. All key codes below are Windows virtual-key codes.
+local macrosTab=window:Tab("Macros")
+local macrosOn=false
+local macroBusy=false
+local macroLastKeys={}
+local macroHeldKeys={}
+local macroError
+local macroBindings={
+    {trigger=0x45,first=0x32,second=0x31,delay=.020},
+    {trigger=0x54,first=0x32,second=0x34,delay=.040},
+    {trigger=0x5A,first=0x33,second=0x31,delay=.040},
+    {trigger=0x58,first=0x33,second=0x34,delay=.040},
+}
+local function macroFocused()
+    if type(isrbxactive)~="function" then return false end
+    local ok,active=pcall(isrbxactive)
+    return ok and active==true
+end
+local function macroReady()
+    return type(iskeypressed)=="function" and type(keypress)=="function"
+        and type(keyrelease)=="function" and type(isrbxactive)=="function"
+        and task and type(task.spawn)=="function" and type(task.wait)=="function"
+end
+local function macroReport(text)
+    if macroError~=text then macroError=text;print("[Macros] "..text) end
+end
+local macroToggle
+macroToggle=macrosTab:Toggle({Name="Enable Macros (F2)",Default=false,Callback=function(on)
+    macrosOn=on
+    if on and not macroReady() then
+        macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
+    end
+end})
+macrosTab:Label({Text="E: 2 > 1 (20 ms) | T: 2 > 4 (40 ms)"})
+macrosTab:Label({Text="Z: 3 > 1 (40 ms) | X: 3 > 4 (40 ms)"})
+local function macroTap(vk)
+    macroHeldKeys[vk]=true
+    keypress(vk)
+    keyrelease(vk)
+    macroHeldKeys[vk]=nil
+end
+local function updateMacros()
+    if not alive or not macroReady() then return end
+    local focused=macroFocused()
+    local f2=iskeypressed(0x71)==true
+    if focused and f2 and not macroLastKeys[0x71] then macroToggle:Set(not macrosOn) end
+    macroLastKeys[0x71]=f2
+    for _,binding in ipairs(macroBindings)do
+        local down=iskeypressed(binding.trigger)==true
+        local pressed=down and not macroLastKeys[binding.trigger]
+        macroLastKeys[binding.trigger]=down
+        if pressed and focused and macrosOn and not macroBusy then
+            macroBusy=true
+            local selected=binding
+            task.spawn(function()
+                local ok,err=pcall(function()
+                    if not alive or not macrosOn or not macroFocused() then return end
+                    macroTap(selected.first)
+                    task.wait(selected.delay)
+                    if alive and macrosOn and macroFocused() then macroTap(selected.second) end
+                end)
+                for vk in pairs(macroHeldKeys)do
+                    pcall(keyrelease,vk)
+                    macroHeldKeys[vk]=nil
+                end
+                macroBusy=false
+                if not ok then macroReport(tostring(err)) end
+            end)
+        end
+    end
+end
+
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     if not alive then return end
+    local macroOK,macroErr=pcall(updateMacros)
+    if not macroOK then macroReport(tostring(macroErr)) end
     local ok,err=pcall(update)
     if not ok then
         message("Tracking unavailable; see Matcha output.")
