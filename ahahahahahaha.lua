@@ -586,9 +586,18 @@ local function updateMacroNotice()
     end
     for _,object in ipairs(macroNotice.parts)do object.Visible=visible end
 end
+-- Persist the master switch without adding another visible control.
+local macroSavedState=macrosTab:Toggle({
+    Name="Saved macro state",Default=false,Flag="macro_master_enabled",
+    Callback=function(on) macrosOn=on end,
+})
+macroSavedState:SetVisible(false)
+macrosOn=macroSavedState.Value==true
 macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mode="Press",Callback=function()
     if not alive or not macroFocused() then return end
-    macrosOn=not macrosOn
+    macroSavedState:Set(not macrosOn)
+    macrosOn=macroSavedState.Value==true
+    window:Save()
     print("[Macros] "..(macrosOn and "ON" or "OFF"))
     local noticeOK,noticeErr=pcall(showMacroNotice,macrosOn)
     if not noticeOK then macroReport(tostring(noticeErr)) end
@@ -603,7 +612,7 @@ local function macroTap(vk)
     macroHeldKeys[vk]=nil
 end
 macrosTab:Section("Aizen Macros")
-aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=true,Callback=function(on)
+aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=true,Flag="macro_use_aizen",Callback=function(on)
     aizenOn=on
     if on and dioOn then
         dioOn=false
@@ -649,7 +658,7 @@ end
 
 
 macrosTab:Section("Gojo Macros")
-gojoToggle=macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Callback=function(on)
+gojoToggle=macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Flag="macro_use_gojo",Callback=function(on)
     gojoOn=on
     if on and dioOn then
         dioOn=false
@@ -700,7 +709,7 @@ end
 
 
 macrosTab:Section("DIO Macros")
-dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Callback=function(on)
+dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Flag="macro_use_dio",Callback=function(on)
     dioOn=on
     if on then
         aizenOn=false;gojoOn=false
@@ -739,6 +748,11 @@ local function runDioMacro()
 end
 macrosTab:Keybind({Name="Uptilt",Default="X",Flag="dio_uptilt_key",Mode="Press",
     Callback=function() runDioMacro() end})
+
+-- Apply saved selections immediately; Nova also restores their callbacks on its next frame.
+aizenOn=aizenToggle.Value==true
+gojoOn=gojoToggle.Value==true
+dioOn=dioToggle.Value==true
 
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     pcall(updateMacroNotice)
