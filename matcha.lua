@@ -516,10 +516,48 @@ end
 local function macroReport(text)
     if macroError~=text then macroError=text;print("[Macros] "..text) end
 end
+local macroNoticeText,macroNoticeBackground
+local macroNoticeUntil=0
+local function showMacroNotice(on)
+    if not macroNoticeText then
+        macroNoticeBackground=Drawing.new("Square")
+        ownedDrawings[#ownedDrawings+1]=macroNoticeBackground
+        macroNoticeBackground.Filled=true
+        macroNoticeBackground.Color=Color3.fromRGB(30,24,38)
+        macroNoticeBackground.Transparency=.9
+        macroNoticeBackground.ZIndex=1000
+        macroNoticeText=Drawing.new("Text")
+        ownedDrawings[#ownedDrawings+1]=macroNoticeText
+        macroNoticeText.Size=20
+        macroNoticeText.Center=true
+        macroNoticeText.Outline=true
+        macroNoticeText.Transparency=1
+        macroNoticeText.ZIndex=1001
+    end
+    macroNoticeText.Text=on and "Macro is ON" or "Macro is OFF"
+    macroNoticeText.Color=on and Color3.fromRGB(110,240,155) or Color3.fromRGB(255,135,135)
+    macroNoticeUntil=(tick and tick() or os.clock())+2
+end
+local function updateMacroNotice()
+    if not macroNoticeText then return end
+    local visible=alive and (tick and tick() or os.clock())<macroNoticeUntil
+    local camera=world.CurrentCamera
+    local size=camera and camera.ViewportSize
+    if not size or size.X<=0 then visible=false end
+    if visible then
+        macroNoticeBackground.Size=Vector2.new(200,40)
+        macroNoticeBackground.Position=Vector2.new(size.X/2-100,24)
+        macroNoticeText.Position=Vector2.new(size.X/2,32)
+    end
+    macroNoticeBackground.Visible=visible
+    macroNoticeText.Visible=visible
+end
 macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mode="Press",Callback=function()
     if not alive or not macroFocused() then return end
     macrosOn=not macrosOn
     print("[Macros] "..(macrosOn and "ON" or "OFF"))
+    local noticeOK,noticeErr=pcall(showMacroNotice,macrosOn)
+    if not noticeOK then macroReport(tostring(noticeErr)) end
     if macrosOn and not macroReady() then
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
     end
@@ -678,6 +716,7 @@ macrosTab:Keybind({Name="Downtilt",Default="C",Flag="dio_downtilt_key",Mode="Pre
     Callback=function() runDioMacro(false) end})
 
 connection=game:GetService("RunService").Heartbeat:Connect(function()
+    pcall(updateMacroNotice)
     if not alive then return end
     local ok,err=pcall(update)
     if not ok then
