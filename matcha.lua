@@ -582,7 +582,6 @@ gojoToggle=macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Callback=funct
         if aizenToggle then aizenToggle:Set(false) end
     end
 end})
-macrosTab:Label({Text="Enable Macros must be ON. Choose Aizen or Gojo."})
 local gojoBindings={
     {name="TP + Pull Blue",key="Z",steps={{0x33,.072},{0x33,.020},{0x51,0}}},
     {name="Instant Blue TP",key="T",steps={{0x33,.092},{0x51,0}}},
