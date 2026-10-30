@@ -674,7 +674,7 @@ dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Callback=functio
         if gojoToggle then gojoToggle:Set(false) end
     end
 end})
-local function runDioMacro(uptilt)
+local function runDioMacro()
     if not alive or not macrosOn or not dioOn or macroBusy or not macroFocused() then return end
     if not macroReady() or type(mouse1press)~="function" or type(mouse1release)~="function" then
         macroReport("DIO requires mouse1press and mouse1release plus the keyboard macro APIs.")
@@ -687,19 +687,12 @@ local function runDioMacro(uptilt)
         local ok,err=pcall(function()
             if not active() then return end
             mouseHeld=true;mouse1press()
-            if uptilt then
-                task.wait(.230)
-                if not active() then return end
-                spaceHeld=true;keypress(0x20)
-                task.wait(.210)
-                if not active() then return end
-                macroTap(0x33)
-            else
-                mouse1release();mouseHeld=false
-                task.wait(.005)
-                if not active() then return end
-                macroTap(0x33)
-            end
+            task.wait(.230)
+            if not active() then return end
+            spaceHeld=true;keypress(0x20)
+            task.wait(.210)
+            if not active() then return end
+            macroTap(0x33)
         end)
         if spaceHeld then pcall(keyrelease,0x20) end
         if mouseHeld then pcall(mouse1release) end
@@ -711,9 +704,7 @@ local function runDioMacro(uptilt)
     end)
 end
 macrosTab:Keybind({Name="Uptilt",Default="X",Flag="dio_uptilt_key",Mode="Press",
-    Callback=function() runDioMacro(true) end})
-macrosTab:Keybind({Name="Downtilt",Default="C",Flag="dio_downtilt_key",Mode="Press",
-    Callback=function() runDioMacro(false) end})
+    Callback=function() runDioMacro() end})
 
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     pcall(updateMacroNotice)
