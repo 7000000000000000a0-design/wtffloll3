@@ -515,17 +515,14 @@ end
 local function macroReport(text)
     if macroError~=text then macroError=text;print("[Macros] "..text) end
 end
-local macroToggle
-macroToggle=macrosTab:Toggle({Name="Enable Macros",Default=false,Callback=function(on)
-    macrosOn=on
-    if on and not macroReady() then
+macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mode="Press",Callback=function()
+    if not alive or not macroFocused() then return end
+    macrosOn=not macrosOn
+    print("[Macros] "..(macrosOn and "ON" or "OFF"))
+    if macrosOn and not macroReady() then
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
     end
 end})
-macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mode="Press",Callback=function()
-    if alive and macroFocused() then macroToggle:Set(not macrosOn) end
-end})
-macrosTab:Label({Text="Click a keybind, then press its new key."})
 local function macroTap(vk)
     macroHeldKeys[vk]=true
     keypress(vk)
@@ -586,7 +583,7 @@ local gojoBindings={
     {name="TP + Pull Blue",key="Z",steps={{0x33,.072},{0x33,.020},{0x51,0}}},
     {name="Instant Blue TP",key="T",steps={{0x33,.092},{0x51,0}}},
     {name="Purple Combo",key="MButton",steps={{0x33,.010},{0x32,1.550},{0x20,0},{0x51,0}}},
-    {name="TP + Blue (preblue first)",key="V",steps={{0x33,.020},{0x51,0}}},
+    {name="Pre Blue",key="V",steps={{0x33,.020},{0x51,0}}},
 }
 local function runGojoMacro(selected)
     if not alive or not macrosOn or not gojoOn or macroBusy or not macroFocused() then return end
