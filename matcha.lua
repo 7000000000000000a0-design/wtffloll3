@@ -491,6 +491,8 @@ end
 local macrosTab=window:Tab("Macros")
 local macrosOn=false
 local gojoOn=false
+local aizenOn=true
+local aizenToggle,gojoToggle
 local macroBusy=false
 local macroHeldKeys={}
 local macroError
@@ -530,8 +532,16 @@ local function macroTap(vk)
     keyrelease(vk)
     macroHeldKeys[vk]=nil
 end
+macrosTab:Section("Aizen Macros")
+aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=true,Callback=function(on)
+    aizenOn=on
+    if on and gojoOn then
+        gojoOn=false
+        if gojoToggle then gojoToggle:Set(false) end
+    end
+end})
 local function runMacro(selected)
-    if not alive or not macrosOn or gojoOn or macroBusy or not macroFocused() then return end
+    if not alive or not macrosOn or not aizenOn or gojoOn or macroBusy or not macroFocused() then return end
     if not macroReady() then
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
         return
@@ -539,10 +549,10 @@ local function runMacro(selected)
     macroBusy=true
     task.spawn(function()
         local ok,err=pcall(function()
-            if not alive or not macrosOn or gojoOn or not macroFocused() then return end
+            if not alive or not macrosOn or not aizenOn or gojoOn or not macroFocused() then return end
             macroTap(selected.first)
             task.wait(selected.delay)
-            if alive and macrosOn and not gojoOn and macroFocused() then macroTap(selected.second) end
+            if alive and macrosOn and aizenOn and not gojoOn and macroFocused() then macroTap(selected.second) end
         end)
         for vk in pairs(macroHeldKeys)do
             pcall(keyrelease,vk)
@@ -565,10 +575,14 @@ end
 
 
 macrosTab:Section("Gojo Macros")
-macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Callback=function(on)
+gojoToggle=macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Callback=function(on)
     gojoOn=on
+    if on and aizenOn then
+        aizenOn=false
+        if aizenToggle then aizenToggle:Set(false) end
+    end
 end})
-macrosTab:Label({Text="Enable Macros must be ON. Gojo mode pauses original macros."})
+macrosTab:Label({Text="Enable Macros must be ON. Choose Aizen or Gojo."})
 local gojoBindings={
     {name="TP + Pull Blue",key="Z",steps={{0x33,.072},{0x33,.020},{0x51,0}}},
     {name="Instant Blue TP",key="T",steps={{0x33,.092},{0x51,0}}},
