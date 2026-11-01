@@ -161,14 +161,36 @@ local function update(player,r)
         end
     end
 end
-for _,p in ipairs(Players:GetPlayers()) do create(p) end
-table.insert(connections,Players.PlayerAdded:Connect(create))
-table.insert(connections,Players.PlayerRemoving:Connect(function(p)
-    if records[p] then records[p].gui:Destroy();records[p]=nil end
-end))
-local elapsed=0
-table.insert(connections,RunService.Heartbeat:Connect(function(dt)
-    elapsed=elapsed+dt;if elapsed<.1 then return end;elapsed=0
+local lastScan=-math.huge
+local lastFrame=-math.huge
+local f6Down=false
+local running=true
+local function step()
+    if not running then return end
+    local now=os.clock()
+    if now-lastFrame<.05 then return end
+    lastFrame=now
+    if now-lastScan>=1 then
+        lastScan=now
+        local present={}
+        for _,player in ipairs(Players:GetPlayers()) do
+            present[player]=true
+            if not records[player] then create(player) end
+        end
+        for player,r in pairs(records) do
+            if not present[player] then r.gui:Destroy();records[player]=nil end
+        end
+    end
+    local down=false
+    if type(iskeypressed)=="function" then
+        local ok,value=pcall(iskeypressed,0x75) -- F6 virtual-key code
+        down=ok and value==true
+    else
+        local ok,value=pcall(function() return UIS:IsKeyDown(Enum.KeyCode.F6) end)
+        down=ok and value==true
+    end
+    if down and not f6Down then state.Enabled=not state.Enabled end
+    f6Down=down
     for player,r in pairs(records) do
         local ok,err=pcall(function() update(player,r);render(r) end)
         if not ok then
@@ -176,11 +198,32 @@ table.insert(connections,RunService.Heartbeat:Connect(function(dt)
             if not r.warned then r.warned=true;warn("[ABA ESP] "..tostring(err)) end
         end
     end
-end))
-table.insert(connections,UIS.InputBegan:Connect(function(input,processed)
-    if not processed and input.KeyCode==Enum.KeyCode.F6 then state.Enabled=not state.Enabled end
-end))
+end
+local ok,connection=pcall(function()
+    return RunService.Heartbeat:Connect(function()
+        local success,err=pcall(step)
+        if not success and state.LastError~=tostring(err) then
+            state.LastError=tostring(err);warn("[ABA ESP] "..state.LastError)
+        end
+    end)
+end)
+if ok and connection then
+    table.insert(connections,connection)
+elseif task and type(task.spawn)=="function" and type(task.wait)=="function" then
+    task.spawn(function()
+        while running do
+            local success,err=pcall(step)
+            if not success and state.LastError~=tostring(err) then
+                state.LastError=tostring(err);warn("[ABA ESP] "..state.LastError)
+            end
+            task.wait(.05)
+        end
+    end)
+else
+    error("ABA ESP requires Heartbeat or task.spawn/task.wait")
+end
 function state.Destroy()
+    running=false
     for _,c in ipairs(connections) do c:Disconnect() end
     for _,r in pairs(records) do r.gui:Destroy() end
     table.clear(records)
