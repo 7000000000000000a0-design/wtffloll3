@@ -52,18 +52,44 @@ end
 local function hide(r)
     for _,d in ipairs(r.objects) do d.Visible=false end
 end
+local projectionWarned=false
+local function project(cam,point)
+    local ok,p,visible=pcall(function() return cam:WorldToViewportPoint(point) end)
+    if ok and p then return p,visible end
+    ok,p,visible=pcall(function() return cam:WorldToScreenPoint(point) end)
+    if ok and p then return p,visible end
+    local cf=cam.CFrame
+    local size=cam.ViewportSize
+    if not size or not size.X or size.X<=0 or not size.Y or size.Y<=0 then
+        local success,result=pcall(function() return workspace:FindFirstChild("WorldCamera").ViewportSize end)
+        if success then size=result end
+    end
+    if not cf or not size or not size.X or size.X<=0 or not size.Y or size.Y<=0 then return end
+    local diff=point-cf.Position
+    local right,up,forward=cf.RightVector,cf.UpVector,cf.LookVector
+    if not right or not up or not forward then return end
+    local function dot(a,b) return a.X*b.X+a.Y*b.Y+a.Z*b.Z end
+    local depth=dot(diff,forward)
+    if depth<=.01 then return nil,false end
+    local fov=cam.FieldOfView
+    if type(fov)~="number" or fov<=0 or fov>=180 then return end
+    local scale=size.Y/(2*math.tan(math.rad(fov)*.5))
+    local x=size.X*.5+dot(diff,right)*scale/depth
+    local y=size.Y*.5-dot(diff,up)*scale/depth
+    return {X=x,Y=y,Z=depth},x>=0 and x<=size.X and y>=0 and y<=size.Y
+end
 local function render(r)
     if not r.gui.Enabled then hide(r);return end
     local cam=workspace.CurrentCamera
     if not cam or not r.gui.Adornee then hide(r);return end
     local world=r.gui.Adornee.Position+Vector3.new(0,3,0)
-    local ok,p,onScreen=pcall(function() return cam:WorldToViewportPoint(world) end)
-    if not ok then
-        ok,p,onScreen=pcall(function() return cam:WorldToScreenPoint(world) end)
-    end
+    local ok,p,onScreen=pcall(project,cam,world)
     if not ok or not p then
         hide(r)
-        if not r.projectionWarning then r.projectionWarning=true;warn("[ABA ESP] Camera projection is unavailable in this client.") end
+        if not projectionWarned and onScreen~=false then
+            projectionWarned=true
+            warn("[ABA ESP] Screen projection needs readable camera CFrame, ViewportSize and FieldOfView.")
+        end
         return
     end
     if onScreen==false or (p.Z and p.Z<=0) then hide(r);return end
