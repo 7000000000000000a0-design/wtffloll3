@@ -18,6 +18,14 @@ local function draw(kind,props)
     for k,v in pairs(props) do pcall(function() d[k]=v end) end
     return d
 end
+local function playerTitle(player)
+    local okName,name=pcall(function() return player.Name end)
+    local okDisplay,display=pcall(function() return player.DisplayName end)
+    name=(okName and type(name)=="string" and name~="" and name) or "Player"
+    display=(okDisplay and type(display)=="string" and display~="" and display) or name
+    if display==name then return name end
+    return display.." (@"..name..")"
+end
 local function create(player)
     local r={rows={},objects={},gui={Enabled=false}}
     local function add(kind,props)
@@ -30,7 +38,7 @@ local function create(player)
     local function text()
         return add("Text",{Size=13,Font=2,Color=Color3.fromRGB(235,240,255),Outline=true,ZIndex=23})
     end
-    r.name=text();r.name.Text=player.DisplayName.." (@"..player.Name..")"
+    r.name=text();r.name.Text=playerTitle(player)
     r.mode=text()
     for i=1,5 do r.rows[i]=text() end
     function r.gui:Destroy()
