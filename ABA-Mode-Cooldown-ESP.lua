@@ -1,4 +1,4 @@
--- ABA mode/cooldown ESP. Run as a LocalScript or through a compatible client.
+-- ABA mode/cooldown ESP for Matcha: Drawing API, no Instance.new.
 -- Reads replicated data only. Hidden opponent backpacks cannot be recovered here.
 local Players=game:GetService("Players")
 local RunService=game:GetService("RunService")
@@ -11,37 +11,64 @@ local state={Enabled=true,ShowSelf=false,MaxDistance=1500}
 state.ModeFields={"ModeCharge","ModeMeter","AwakeningCharge","UltimateCharge","Mode","Ultimate"}
 state.ModeMax=nil -- Never assume a raw number is a percentage.
 local records,connections={},{}
-local folder=Instance.new("Folder")
-folder.Name="ABAStatusESP"
-folder.Parent=me:WaitForChild("PlayerGui")
+assert(Drawing and type(Drawing.new)=="function","Matcha Drawing API is required")
 local colors={ready=Color3.fromRGB(100,240,157),cooldown=Color3.fromRGB(255,161,95),unknown=Color3.fromRGB(165,174,194)}
-local function label(parent,y,height)
-    local t=Instance.new("TextLabel")
-    t.BackgroundTransparency=1;t.Position=UDim2.fromOffset(8,y)
-    t.Size=UDim2.new(1,-16,0,height);t.Font=Enum.Font.GothamMedium
-    t.TextSize=12;t.TextColor3=Color3.fromRGB(235,240,255)
-    t.TextXAlignment=Enum.TextXAlignment.Left;t.TextTruncate=Enum.TextTruncate.AtEnd
-    t.Parent=parent;return t
+local function draw(kind,props)
+    local d=Drawing.new(kind)
+    for k,v in pairs(props) do pcall(function() d[k]=v end) end
+    return d
 end
 local function create(player)
-    local gui=Instance.new("BillboardGui")
-    gui.Name="Status_"..player.UserId;gui.Size=UDim2.fromOffset(254,174)
-    gui.StudsOffsetWorldSpace=Vector3.new(0,4.3,0);gui.AlwaysOnTop=true
-    gui.MaxDistance=state.MaxDistance;gui.Enabled=false;gui.Parent=folder
-    local panel=Instance.new("Frame");panel.Size=UDim2.fromScale(1,1)
-    panel.BackgroundColor3=Color3.fromRGB(17,21,33);panel.BackgroundTransparency=.13
-    panel.BorderSizePixel=0;panel.Parent=gui
-    local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(0,8);corner.Parent=panel
-    local name=label(panel,4,22);name.Text=player.DisplayName.." (@"..player.Name..")"
-    local mode=label(panel,27,18)
-    local bar=Instance.new("Frame");bar.Position=UDim2.fromOffset(8,48)
-    bar.Size=UDim2.new(1,-16,0,5);bar.BorderSizePixel=0
-    bar.BackgroundColor3=Color3.fromRGB(57,63,81);bar.Parent=panel
-    local fill=Instance.new("Frame");fill.Size=UDim2.fromScale(0,1);fill.BorderSizePixel=0
-    fill.BackgroundColor3=Color3.fromRGB(153,116,255);fill.Parent=bar
-    local rows={};for i=1,5 do rows[i]=label(panel,57+(i-1)*21,20) end
-    records[player]={gui=gui,mode=mode,fill=fill,rows=rows}
-    return records[player]
+    local r={rows={},objects={},gui={Enabled=false}}
+    local function add(kind,props)
+        props.Visible=false
+        local d=draw(kind,props);table.insert(r.objects,d);return d
+    end
+    r.panel=add("Square",{Filled=true,Color=Color3.fromRGB(17,21,33),Transparency=.87,ZIndex=20})
+    r.bar=add("Square",{Filled=true,Color=Color3.fromRGB(57,63,81),ZIndex=21})
+    r.fill=add("Square",{Filled=true,Color=Color3.fromRGB(153,116,255),ZIndex=22})
+    local function text()
+        return add("Text",{Size=13,Font=2,Color=Color3.fromRGB(235,240,255),Outline=true,ZIndex=23})
+    end
+    r.name=text();r.name.Text=player.DisplayName.." (@"..player.Name..")"
+    r.mode=text()
+    for i=1,5 do r.rows[i]=text() end
+    function r.gui:Destroy()
+        for _,d in ipairs(r.objects) do pcall(function() d:Remove() end) end
+    end
+    records[player]=r;return r
+end
+local function setText(row,text,color)
+    row.Text=text;row.Color=color
+end
+local function hide(r)
+    for _,d in ipairs(r.objects) do d.Visible=false end
+end
+local function render(r)
+    if not r.gui.Enabled then hide(r);return end
+    local cam=workspace.CurrentCamera
+    if not cam or not r.gui.Adornee then hide(r);return end
+    local world=r.gui.Adornee.Position+Vector3.new(0,3,0)
+    local ok,p,onScreen=pcall(function() return cam:WorldToViewportPoint(world) end)
+    if not ok then
+        ok,p,onScreen=pcall(function() return cam:WorldToScreenPoint(world) end)
+    end
+    if not ok or not p then
+        hide(r)
+        if not r.projectionWarning then r.projectionWarning=true;warn("[ABA ESP] Camera projection is unavailable in this client.") end
+        return
+    end
+    if onScreen==false or (p.Z and p.Z<=0) then hide(r);return end
+    local distance=(cam.CFrame.Position-r.gui.Adornee.Position).Magnitude
+    if distance>state.MaxDistance then hide(r);return end
+    local x,y=math.floor(p.X-127),math.floor(p.Y-174)
+    r.panel.Position=Vector2.new(x,y);r.panel.Size=Vector2.new(254,174)
+    r.name.Position=Vector2.new(x+8,y+5);r.mode.Position=Vector2.new(x+8,y+28)
+    r.bar.Position=Vector2.new(x+8,y+48);r.bar.Size=Vector2.new(238,5)
+    r.fill.Position=r.bar.Position;r.fill.Size=Vector2.new(math.max(1,238*(r.ratio or 0)),5)
+    for i,row in ipairs(r.rows) do row.Position=Vector2.new(x+8,y+57+(i-1)*21) end
+    for _,d in ipairs(r.objects) do d.Visible=true end
+    r.fill.Visible=(r.ratio or 0)>0
 end
 local function readNumber(root,key)
     if not root then return end
@@ -105,24 +132,24 @@ local function update(player,r)
     if value and maximum then
         local ratio=math.clamp(value/maximum,0,1)
         r.mode.Text=string.format("MODE  %.0f%%",ratio*100)
-        r.fill.Size=UDim2.fromScale(ratio,1)
+        r.ratio=ratio
     elseif value then
         r.mode.Text=string.format("MODE  %g  (maximum unknown)",value)
-        r.fill.Size=UDim2.fromScale(0,1)
+        r.ratio=0
     else
-        r.mode.Text="MODE  unavailable";r.fill.Size=UDim2.fromScale(0,1)
+        r.mode.Text="MODE  unavailable";r.ratio=0
     end
     local slots=movesFor(player,char)
     for i=1,5 do
         local data=slots[i];local row=r.rows[i]
-        if not data then row.Text=i.."  unavailable";row.TextColor3=colors.unknown
+        if not data then row.Text=i.."  unavailable";row.Color=colors.unknown
         elseif type(data.cd)~="number" then
-            row.Text=i.."  "..data.name.."  | unknown";row.TextColor3=colors.unknown
+            row.Text=i.."  "..data.name.."  | unknown";row.Color=colors.unknown
         elseif data.cd>=20 then
-            row.Text=i.."  "..data.name.."  | READY";row.TextColor3=colors.ready
+            row.Text=i.."  "..data.name.."  | READY";row.Color=colors.ready
         else
             row.Text=string.format("%d  %s  | CD %.0f%%",i,data.name,math.clamp(data.cd/20,0,1)*100)
-            row.TextColor3=colors.cooldown
+            row.Color=colors.cooldown
         end
     end
 end
@@ -135,9 +162,9 @@ local elapsed=0
 table.insert(connections,RunService.Heartbeat:Connect(function(dt)
     elapsed=elapsed+dt;if elapsed<.1 then return end;elapsed=0
     for player,r in pairs(records) do
-        local ok,err=pcall(update,player,r)
+        local ok,err=pcall(function() update(player,r);render(r) end)
         if not ok then
-            r.gui.Enabled=false
+            r.gui.Enabled=false;hide(r)
             if not r.warned then r.warned=true;warn("[ABA ESP] "..tostring(err)) end
         end
     end
@@ -147,7 +174,8 @@ table.insert(connections,UIS.InputBegan:Connect(function(input,processed)
 end))
 function state.Destroy()
     for _,c in ipairs(connections) do c:Disconnect() end
-    folder:Destroy();table.clear(records)
+    for _,r in pairs(records) do r.gui:Destroy() end
+    table.clear(records)
     if env.ABAStatusESP==state then env.ABAStatusESP=nil end
 end
 env.ABAStatusESP=state
