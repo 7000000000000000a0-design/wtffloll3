@@ -42,7 +42,7 @@ local function quest()
         if o:IsA("TextLabel") and visible(o) and norm(o.Text)=="the horseman's riddle" then
             local root=o.Parent
             for _=1,4 do
-                if not root or root==pg or root:IsA("ScreenGui") then break end
+                if not root or root==pg then break end
                 local reward,public,close
                 for _,t in ipairs(root:GetDescendants()) do
                     if (t:IsA("TextLabel") or t:IsA("TextButton")) and visible(t) then
@@ -51,7 +51,7 @@ local function quest()
                         local n=text:match("reward%s*:%s*(%d+)")
                         if n then reward=tonumber(n) end
                         if t:IsA("TextButton") and (text=="x" or text=="×") then close=t end
-                    elseif t:IsA("ImageButton") and visible(t) and t.Name:lower():find("close",1,true) then close=t end
+                    elseif t:IsA("ImageButton") and visible(t) and (t.Name:lower():find("close",1,true) or t.Name:lower()=="x") then close=t end
                 end
                 if reward then return {reward=reward,target=reward==10 and public==true,close=close} end
                 root=root.Parent
@@ -98,30 +98,80 @@ local function stop(text,g)
     if g and state.Generation~=g then return end
     state.Running=false;status(text)
 end
+local function horseman()
+    local npcs=workspace:FindFirstChild("FriendlyNPCs")
+    if not npcs then return end
+    for _,npc in ipairs(npcs:GetChildren()) do
+        local hum=npc:FindFirstChildOfClass("Humanoid")
+        if norm(npc.Name):find("horseman",1,true) or (hum and norm(hum.DisplayName):find("horseman",1,true)) then return npc end
+    end
+end
+local function ensureDialogue(g)
+    if button("give me a new riddle") or button("what's my riddle?") then return true end
+    local npc=horseman()
+    if not npc then stop("Horseman NPC not found nearby",g);return false end
+    local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    local part=npc.PrimaryPart or npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChildWhichIsA("BasePart")
+    if not root or not part or (root.Position-part.Position).Magnitude>30 then
+        stop("Stand beside the Horseman, then press F8",g);return false
+    end
+    local prompt=npc:FindFirstChild("NpcTalkPrompt")
+    local detector=npc:FindFirstChildOfClass("ClickDetector")
+    for attempt=1,3 do
+        if not valid(g) then return false end
+        status("Talking to the Horseman...")
+        local fired=false
+        if prompt and prompt.Enabled and type(fireproximityprompt)=="function" then
+            fired=pcall(fireproximityprompt,prompt)
+        end
+        if not fired and detector and type(fireclickdetector)=="function" then fired=pcall(fireclickdetector,detector) end
+        if not fired and prompt and type(firesignal)=="function" then fired=pcall(function() firesignal(prompt.Triggered,player) end) end
+        if not fired then stop("Volt cannot activate NPC interaction",g);return false end
+        local deadline=os.clock()+4
+        repeat
+            if button("give me a new riddle") or button("what's my riddle?") then return true end
+            if not pause(g,.15) then return false end
+        until os.clock()>=deadline
+    end
+    stop("Horseman dialogue did not reopen",g);return false
+end
+local function closeQuest(q,g)
+    if not q.close then stop("Cannot find quest close button",g);return false end
+    status("Closing non-matching quest...")
+    if not click(q.close,g) then return false end
+    local deadline=os.clock()+3
+    repeat
+        if not quest() then return pause(g,.4) end
+        if not pause(g,.1) then return false end
+    until os.clock()>=deadline
+    stop("Quest panel did not close",g);return false
+end
 local function run(g)
     for attempt=1,state.MaxAttempts do
         if not valid(g) then return end
         local q=quest()
         if q then
             if q.target then stop("FOUND: public match, 10 candy",g);return end
-            if not q.close then stop("Close the quest panel, then press F8",g);return end
-            if not click(q.close,g) or not pause(g,.6) then return end
+            if not closeQuest(q,g) then return end
         end
+        if not ensureDialogue(g) then return end
         local reroll=button("give me a new riddle")
         if not reroll then stop("Open the Horseman dialogue, then press F8",g);return end
         status("Requesting riddle "..attempt)
         if not click(reroll,g) or not pause(g,1.4) then return end
         q=quest()
         if not q then
+            if not ensureDialogue(g) then return end
             local show=button("what's my riddle?")
-            if not show then stop("Reopen dialogue and press F8 to inspect quest",g);return end
+            if not show then stop("Quest inspection choice not available",g);return end
             if not click(show,g) then return end
             q=waitQuest(g,4)
         end
         if not valid(g) then return end
         if not q then stop("No readable reward panel; stopped safely",g);return end
         if q.target then stop("FOUND: public match, 10 candy",g);return end
-        status("Reward "..q.reward.."; continuing")
+        status("Reward "..q.reward.."; rerolling")
+        if not closeQuest(q,g) then return end
         if not pause(g,.8) then return end
     end
     stop("40 attempts reached; press F8 to continue",g)
@@ -144,5 +194,5 @@ connection=UIS.InputBegan:Connect(function(input,processed)
         if not ok then stop("Error: "..tostring(err),g) end
     end) end
 end)
-status("Ready: open Horseman dialogue; press F8")
+status("Ready: stand beside Horseman; press F8")
 
