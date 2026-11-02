@@ -37,6 +37,31 @@ local function button(text)
         if o:IsA("TextButton") and visible(o) and norm(o.Text)==text then return o end
     end
 end
+local function findQuestClose(root,titleObject)
+    local candidates={}
+    for _,o in ipairs(root:GetDescendants()) do
+        if visible(o) then
+            local text=(o:IsA("TextLabel") or o:IsA("TextButton")) and norm(o.Text) or ""
+            if text=="x" or text=="×" then
+                local button=o
+                while button and button~=root and not button:IsA("GuiButton") do button=button.Parent end
+                if button and button:IsA("GuiButton") and visible(button) then candidates[button]=true end
+            elseif o:IsA("GuiButton") and (o.Name:lower():find("close",1,true) or o.Name:lower()=="x") then
+                candidates[o]=true
+            end
+        end
+    end
+    local best,bestScore
+    local titleY=titleObject.AbsolutePosition.Y
+    for button in pairs(candidates) do
+        local p,size=button.AbsolutePosition,button.AbsoluteSize
+        if size.X>0 and size.Y>0 then
+            local score=math.abs(p.Y-titleY)*10-p.X*.01
+            if not bestScore or score<bestScore then best=button;bestScore=score end
+        end
+    end
+    return best
+end
 local function quest()
     for _,o in ipairs(pg:GetDescendants()) do
         if o:IsA("TextLabel") and visible(o) and norm(o.Text)=="the horseman's riddle" then
@@ -53,7 +78,12 @@ local function quest()
                         if t:IsA("TextButton") and (text=="x" or text=="×") then close=t end
                     elseif t:IsA("ImageButton") and visible(t) and (t.Name:lower():find("close",1,true) or t.Name:lower()=="x") then close=t end
                 end
-                if reward then return {reward=reward,target=reward==10 and public==true,close=close} end
+                if reward then
+                    close=findQuestClose(root,o) or close
+                    -- The red X may be a sibling of the content frame.
+                    if not close and root.Parent and root.Parent~=pg then close=findQuestClose(root.Parent,o) end
+                    return {reward=reward,target=reward==10 and public==true,close=close}
+                end
                 root=root.Parent
             end
         end
@@ -137,7 +167,7 @@ local function ensureDialogue(g)
 end
 local function closeQuest(q,g)
     if not q.close then stop("Cannot find quest close button",g);return false end
-    status("Closing non-matching quest...")
+    status("Closing quest using the top-right X...")
     if not click(q.close,g) then return false end
     local deadline=os.clock()+3
     repeat
