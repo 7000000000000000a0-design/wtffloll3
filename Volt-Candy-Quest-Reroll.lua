@@ -113,7 +113,7 @@ local function click(o,g)
         local inset=game:GetService("GuiService"):GetGuiInset();x=x+inset.X;y=y+inset.Y
     end
     vim:SendMouseMoveEvent(x,y,game)
-    if not pause(g,.04) then return false end
+    if not pause(g,.03) then return false end
     vim:SendMouseButtonEvent(x,y,0,true,game,0)
     task.wait(.02)
     vim:SendMouseButtonEvent(x,y,0,false,game,0)
@@ -122,7 +122,7 @@ end
 local function waitQuest(g,seconds)
     local finish=os.clock()+seconds
     repeat local q=quest();if q then return q end
-        if not pause(g,.04) then return end
+        if not pause(g,.03) then return end
     until os.clock()>=finish
 end
 local function stop(text,g)
@@ -153,7 +153,7 @@ local function dismissFinalDialogue(g)
         local count=(utf8 and utf8.len and utf8.len(content)) or #content
         local max=text.MaxVisibleGraphemes
         local complete=type(max)=="number" and (max<0 or max>=count)
-        if complete and os.clock()-lastClick>.3 then
+        if complete and os.clock()-lastClick>.25 then
             status("Closing completed final dialogue...")
             lastClick=os.clock()
             local advanced=false
@@ -200,7 +200,7 @@ local function ensureDialogue(g)
         local deadline=os.clock()+4
         repeat
             if button("give me a new riddle") or button("what's my riddle?") then return true end
-            if not pause(g,.04) then return false end
+            if not pause(g,.03) then return false end
         until os.clock()>=deadline
     end
     stop("Horseman dialogue did not reopen",g);return false
@@ -256,20 +256,20 @@ local function closeQuest(q,g)
     -- Use actual mouse input, so a plain label or overlay cannot block signal lookup.
     local vim=game:GetService("VirtualInputManager")
     vim:SendMouseMoveEvent(x,y,game)
-    if not pause(g,.04) then return false end
+    if not pause(g,.03) then return false end
     vim:SendMouseButtonEvent(x,y,0,true,game,0)
     task.wait(.02)
     vim:SendMouseButtonEvent(x,y,0,false,game,0)
     local deadline=os.clock()+3
     repeat
-        if not quest() then return pause(g,.06) end
-        if not pause(g,.04) then return false end
+        if not quest() then return pause(g,.04) end
+        if not pause(g,.03) then return false end
     until os.clock()>=deadline
     stop("Quest panel did not close",g);return false
 end
 local function waitAfterReroll(g)
     -- Let the click handler start, then proceed on an observable UI change.
-    if not pause(g,.08) then return false end
+    if not pause(g,.06) then return false end
     local deadline=os.clock()+4
     repeat
         if not valid(g) then return false end
@@ -280,7 +280,7 @@ local function waitAfterReroll(g)
         local label=frame and frame:FindFirstChild("TextLabel")
         if label and norm(label.Text):find("can you solve this one",1,true) then return true end
         if button("what's my riddle?") then return true end
-        if not pause(g,.04) then return false end
+        if not pause(g,.03) then return false end
     until os.clock()>=deadline
     stop("Riddle response timed out",g);return false
 end
@@ -325,7 +325,7 @@ local function run(g)
         status("Reward "..q.reward.."; rerolling")
         if not closeQuest(q,g) then return end
         state.RecoveryFailures=0
-        if not pause(g,.04) then return end
+        if not pause(g,.03) then return end
     end
 end
 local connection
