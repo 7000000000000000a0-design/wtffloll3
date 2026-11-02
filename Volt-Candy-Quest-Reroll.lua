@@ -92,7 +92,7 @@ end
 local function valid(g) return state.Alive and state.Running and state.Generation==g end
 local function pause(g,seconds)
     local untilTime=os.clock()+seconds
-    repeat if not valid(g) then return false end;task.wait(.05) until os.clock()>=untilTime
+    repeat if not valid(g) then return false end;task.wait(.02) until os.clock()>=untilTime
     return true
 end
 local function click(o,g)
@@ -112,16 +112,16 @@ local function click(o,g)
         local inset=game:GetService("GuiService"):GetGuiInset();x=x+inset.X;y=y+inset.Y
     end
     vim:SendMouseMoveEvent(x,y,game)
-    if not pause(g,.1) then return false end
+    if not pause(g,.04) then return false end
     vim:SendMouseButtonEvent(x,y,0,true,game,0)
-    task.wait(.05)
+    task.wait(.02)
     vim:SendMouseButtonEvent(x,y,0,false,game,0)
     return valid(g)
 end
 local function waitQuest(g,seconds)
     local finish=os.clock()+seconds
     repeat local q=quest();if q then return q end
-        if not pause(g,.1) then return end
+        if not pause(g,.04) then return end
     until os.clock()>=finish
 end
 local function stop(text,g)
@@ -137,7 +137,7 @@ local function horseman()
     end
 end
 local function dismissFinalDialogue(g)
-    for attempt=1,4 do
+    for attempt=1,8 do
         if not valid(g) then return false end
         local chat=pg:FindFirstChild("ChatGui")
         local frame=chat and chat:FindFirstChild("Frame")
@@ -156,10 +156,10 @@ local function dismissFinalDialogue(g)
             local vim=game:GetService("VirtualInputManager")
             vim:SendMouseMoveEvent(x,y,game)
             vim:SendMouseButtonEvent(x,y,0,true,game,0)
-            task.wait(.05)
+            task.wait(.02)
             vim:SendMouseButtonEvent(x,y,0,false,game,0)
         end
-        if not pause(g,.7) then return false end
+        if not pause(g,.12) then return false end
     end
     local chat=pg:FindFirstChild("ChatGui")
     if chat and chat.Enabled then
@@ -192,7 +192,7 @@ local function ensureDialogue(g)
         local deadline=os.clock()+4
         repeat
             if button("give me a new riddle") or button("what's my riddle?") then return true end
-            if not pause(g,.15) then return false end
+            if not pause(g,.04) then return false end
         until os.clock()>=deadline
     end
     stop("Horseman dialogue did not reopen",g);return false
@@ -248,16 +248,33 @@ local function closeQuest(q,g)
     -- Use actual mouse input, so a plain label or overlay cannot block signal lookup.
     local vim=game:GetService("VirtualInputManager")
     vim:SendMouseMoveEvent(x,y,game)
-    if not pause(g,.15) then return false end
+    if not pause(g,.04) then return false end
     vim:SendMouseButtonEvent(x,y,0,true,game,0)
-    task.wait(.05)
+    task.wait(.02)
     vim:SendMouseButtonEvent(x,y,0,false,game,0)
     local deadline=os.clock()+3
     repeat
-        if not quest() then return pause(g,.4) end
-        if not pause(g,.1) then return false end
+        if not quest() then return pause(g,.06) end
+        if not pause(g,.04) then return false end
     until os.clock()>=deadline
     stop("Quest panel did not close",g);return false
+end
+local function waitAfterReroll(g)
+    -- Let the click handler start, then proceed on an observable UI change.
+    if not pause(g,.08) then return false end
+    local deadline=os.clock()+4
+    repeat
+        if not valid(g) then return false end
+        if quest() then return true end
+        local chat=pg:FindFirstChild("ChatGui")
+        if not chat or not chat.Enabled then return true end
+        local frame=chat:FindFirstChild("Frame")
+        local label=frame and frame:FindFirstChild("TextLabel")
+        if label and norm(label.Text):find("can you solve this one",1,true) then return true end
+        if button("what's my riddle?") then return true end
+        if not pause(g,.04) then return false end
+    until os.clock()>=deadline
+    stop("Riddle response timed out",g);return false
 end
 local function run(g)
     for attempt=1,state.MaxAttempts do
@@ -271,7 +288,7 @@ local function run(g)
         local reroll=button("give me a new riddle")
         if not reroll then stop("Open the Horseman dialogue, then press F8",g);return end
         status("Requesting riddle "..attempt)
-        if not click(reroll,g) or not pause(g,1.4) then return end
+        if not click(reroll,g) or not waitAfterReroll(g) then return end
         if not dismissFinalDialogue(g) then return end
         q=quest()
         if not q then
@@ -286,7 +303,7 @@ local function run(g)
         if q.target then stop("FOUND: public match, 10 candy",g);return end
         status("Reward "..q.reward.."; rerolling")
         if not closeQuest(q,g) then return end
-        if not pause(g,.8) then return end
+        if not pause(g,.06) then return end
     end
     stop("40 attempts reached; press F8 to continue",g)
 end
