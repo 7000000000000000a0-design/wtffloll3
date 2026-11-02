@@ -117,7 +117,25 @@ local function textObjects(root)
     end
     return result
 end
+local function dialogueButton(phrase)
+    local pg=gui()
+    local chat=pg and pg:FindFirstChild("ChatGui")
+    local frame=chat and chat:FindFirstChild("Frame")
+    if not frame then return end
+    local ok,enabled=pcall(function() return chat.Enabled end)
+    if ok and enabled==false then return end
+    for _,button in ipairs(frame:GetChildren()) do
+        local read,text=pcall(function() return button.Text end)
+        local shown,isVisible=pcall(function() return button.Visible end)
+        if read and type(text)=="string" and normalize(text)==phrase and (not shown or isVisible~=false) then
+            local pos,size=button.AbsolutePosition,button.AbsoluteSize
+            if pos and size and size.X>0 and size.Y>0 then return button end
+        end
+    end
+end
 local function findText(phrase)
+    local direct=dialogueButton(phrase)
+    if direct then return direct end
     for _,o in ipairs(textObjects(gui())) do
         if normalize(o.Text)==phrase then return o end
     end
@@ -225,6 +243,13 @@ local function update()
         return
     end
     if phase=="inspect" then
+        local direct=dialogueButton("give me a new riddle")
+        if direct then
+            -- First inspect an already displayed quest if its data has been read.
+            local existing=panel()
+            if existing and existing.target then finish("FOUND: public match, 10 candy");return end
+            if not existing then phase="reroll" end
+        end
         log("Checking visible quest...")
         local p=panel()
         if p then
@@ -282,6 +307,7 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
     pcall(updateNotice)
     if not state.Running then return end
     -- Advance a smaller GUI batch, then the reroll state machine.
+    -- Direct dialogue choices do not depend on completion of the general GUI scan.
     local scanned,scanError=pcall(refreshScan)
     if not scanned then finish("GUI scan error: "..tostring(scanError));return end
     local ok,err=pcall(update)
