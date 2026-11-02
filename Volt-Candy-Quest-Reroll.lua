@@ -143,7 +143,7 @@ local function horseman()
     end
 end
 local lastDialogueClick=0
-skipDialogue=function(g,allowCompleted)
+skipDialogue=function(g,allowCompleted,forcePhysical)
     if not valid(g) or os.clock()-lastDialogueClick<.25 then return false end
     local chat=pg:FindFirstChild("ChatGui")
     local frame=chat and chat:FindFirstChild("Frame")
@@ -152,7 +152,8 @@ skipDialogue=function(g,allowCompleted)
     for _,o in ipairs(frame:GetChildren()) do
         if o:IsA("TextButton") and o.Visible then return false end
     end
-    if quest() then return false end
+    -- Final dialogue sits beneath the quest panel; it must still be dismissible.
+    if quest() and not allowCompleted then return false end
     local content=text.ContentText or text.Text
     local count=(utf8 and utf8.len and utf8.len(content)) or #content
     local max=text.MaxVisibleGraphemes
@@ -160,7 +161,7 @@ skipDialogue=function(g,allowCompleted)
     if not typing and not allowCompleted then return false end
     lastDialogueClick=os.clock()
     local advanced=false
-    if type(_G.M1Override)=="function" then advanced=pcall(_G.M1Override) end
+    if not forcePhysical and type(_G.M1Override)=="function" then advanced=pcall(_G.M1Override) end
     if not advanced then
         local p,size=text.AbsolutePosition,text.AbsoluteSize
         local x,y=p.X+size.X/2,p.Y+size.Y/2
@@ -178,14 +179,22 @@ skipDialogue=function(g,allowCompleted)
 end
 local function dismissFinalDialogue(g)
     local started=os.clock()
+    local clicks=0
     repeat
         if not valid(g) then return false end
         local chat=pg:FindFirstChild("ChatGui")
         local frame=chat and chat:FindFirstChild("Frame")
         local text=frame and frame:FindFirstChild("TextLabel")
         if not chat or not chat.Enabled or not text or not norm(text.Text):find("can you solve this one",1,true) then return true end
-        status("Skipping final dialogue...")
-        skipDialogue(g,true)
+        local current=quest()
+        if current and current.target then
+            state.NeedsInspection=false
+            stop(current.ranked and ("FOUND: ranked match, "..current.reward.." candy") or "FOUND: public match, 10 candy",g)
+            return false
+        end
+        status("Dismissing final dialogue...")
+        -- A callback can exist but do nothing; switch to a real click after one second.
+        if skipDialogue(g,true,os.clock()-started>1) then clicks=clicks+1 end
         if not pause(g,.08) then return false end
     until os.clock()-started>=6
     stop("Final dialogue did not finish/close",g);return false
@@ -331,6 +340,11 @@ local function run(g)
         -- Preserve this flag across recovery; inspect before requesting another quest.
         state.NeedsInspection=true
         if not click(reroll,g) or not waitAfterReroll(g) then return end
+        q=quest()
+        if q and q.target then
+            state.NeedsInspection=false
+            stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return
+        end
         if not dismissFinalDialogue(g) then return end
         q=quest() or inspectQuest(g)
         if not valid(g) then return end
