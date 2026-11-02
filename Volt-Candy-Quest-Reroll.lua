@@ -82,7 +82,7 @@ local function quest()
                     close=findQuestClose(root,o) or close
                     -- The red X may be a sibling of the content frame.
                     if not close and root.Parent and root.Parent~=pg then close=findQuestClose(root.Parent,o) end
-                    return {reward=reward,target=reward==10 and public==true,close=close}
+                    return {reward=reward,target=reward==10 and public==true,close=close,root=root,title=o}
                 end
                 root=root.Parent
             end
@@ -166,9 +166,60 @@ local function ensureDialogue(g)
     stop("Horseman dialogue did not reopen",g);return false
 end
 local function closeQuest(q,g)
-    if not q.close then stop("Cannot find quest close button",g);return false end
-    status("Closing quest using the top-right X...")
-    if not click(q.close,g) then return false end
+    status("Pressing the quest panel X...")
+    if not valid(g) then return false end
+    -- Search all visible X glyphs: some interfaces use a plain label/frame for close.
+    local target=q.close
+    if not target then
+        local bestScore
+        for _,o in ipairs(pg:GetDescendants()) do
+            if (o:IsA("TextLabel") or o:IsA("TextButton")) and visible(o) then
+                local text=norm(o.Text):gsub("%s","")
+                if text=="x" or text=="×" or text=="✕" or text=="✖" then
+                    local p,size=o.AbsolutePosition,o.AbsoluteSize
+                    local tp=q.title.AbsolutePosition
+                    local score=math.abs(p.Y-tp.Y)*10-p.X*.01
+                    if size.X>0 and size.Y>0 and math.abs(p.Y-tp.Y)<100 and p.X>tp.X then
+                        if not bestScore or score<bestScore then target=o;bestScore=score end
+                    end
+                end
+            end
+        end
+    end
+    local x,y,screen
+    if target then
+        local p,size=target.AbsolutePosition,target.AbsoluteSize
+        x=p.X+size.X/2;y=p.Y+size.Y/2
+        screen=target:FindFirstAncestorOfClass("ScreenGui")
+    else
+        -- The supplied screenshots place X flush against the panel's top-right edge.
+        local panel=q.root
+        while panel and panel~=pg do
+            if panel:IsA("GuiObject") then
+                local size=panel.AbsoluteSize
+                local tp=q.title.AbsolutePosition
+                local p=panel.AbsolutePosition
+                if size.X>=350 and size.Y>=120 and p.Y<=tp.Y and tp.Y-p.Y<100 then break end
+            end
+            panel=panel.Parent
+        end
+        if not panel or panel==pg or not panel:IsA("GuiObject") then
+            stop("Cannot determine quest panel bounds",g);return false
+        end
+        local p,size=panel.AbsolutePosition,panel.AbsoluteSize
+        x=p.X+size.X-22;y=p.Y+22
+        screen=panel:FindFirstAncestorOfClass("ScreenGui")
+    end
+    if screen and not screen.IgnoreGuiInset then
+        local inset=game:GetService("GuiService"):GetGuiInset();x=x+inset.X;y=y+inset.Y
+    end
+    -- Use actual mouse input, so a plain label or overlay cannot block signal lookup.
+    local vim=game:GetService("VirtualInputManager")
+    vim:SendMouseMoveEvent(x,y,game)
+    if not pause(g,.15) then return false end
+    vim:SendMouseButtonEvent(x,y,0,true,game,0)
+    task.wait(.05)
+    vim:SendMouseButtonEvent(x,y,0,false,game,0)
     local deadline=os.clock()+3
     repeat
         if not quest() then return pause(g,.4) end
