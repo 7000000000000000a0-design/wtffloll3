@@ -127,12 +127,55 @@ local function waitQuest(g,seconds)
         if not pause(g,.05) then return end
     until os.clock()>=finish
 end
+local HttpService=game:GetService("HttpService")
+local notifiedGenerations={}
+local function notifyFound(message,g)
+    if notifiedGenerations[g] then return end
+    notifiedGenerations[g]=true
+    task.spawn(function()
+        local okConfig,config=pcall(function()
+            return HttpService:JSONDecode(readfile("CandyQuestWebhook.json"))
+        end)
+        if not okConfig or type(config)~="table" then
+            warn("[Volt Candy] Discord settings file unavailable; quest remains stopped.");return
+        end
+        local url=config.WebhookUrl
+        local userId=tostring(config.UserId or "")
+        if type(url)~="string" or not url:match("^https://discord%.com/api/webhooks/%d+/[%w_%-]+$") or not userId:match("^%d+$") then
+            warn("[Volt Candy] Discord settings invalid; quest remains stopped.");return
+        end
+        local requestFn=request or http_request or (syn and syn.request) or (http and http.request)
+        if type(requestFn)~="function" then warn("[Volt Candy] HTTP request API unavailable; cannot notify Discord.");return end
+        local payload={
+            content="<@"..userId.."> Candy quest found! "..message,
+            allowed_mentions={parse={},users={userId}},
+        }
+        local body=HttpService:JSONEncode(payload)
+        for attempt=1,3 do
+            local ok,response=pcall(requestFn,{Url=url.."?wait=true",Method="POST",Headers={["Content-Type"]="application/json"},Body=body})
+            local code=ok and type(response)=="table" and tonumber(response.StatusCode or response.Status)
+            if code and code>=200 and code<300 then
+                print("[Volt Candy] Discord notification sent.");return
+            end
+            if code==429 then
+                local delay=2
+                pcall(function() delay=tonumber(HttpService:JSONDecode(response.Body).retry_after) or delay end)
+                task.wait(math.clamp(delay,.5,15))
+            else
+                -- No blind retries: a lost response may still mean Discord received the ping.
+                warn("[Volt Candy] Discord notification failed (status "..tostring(code or "unknown").."). Quest remains stopped.");return
+            end
+        end
+        warn("[Volt Candy] Discord rate limit persisted; quest remains stopped.")
+    end)
+end
 local function stop(text,g)
     if g and state.Generation~=g then return end
     if g and valid(g) and not text:find("FOUND:",1,true) then
         error("Recovery needed: "..text,0)
     end
     state.Running=false;status(text)
+    if text:find("FOUND:",1,true) then notifyFound(text,g or state.Generation) end
 end
 local function horseman()
     local npcs=workspace:FindFirstChild("FriendlyNPCs")
