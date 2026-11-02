@@ -119,14 +119,19 @@ local function click(o,g)
     vim:SendMouseButtonEvent(x,y,0,false,game,0)
     return valid(g)
 end
+local skipDialogue
 local function waitQuest(g,seconds)
     local finish=os.clock()+seconds
     repeat local q=quest();if q then return q end
+        if skipDialogue then skipDialogue(g) end
         if not pause(g,.04) then return end
     until os.clock()>=finish
 end
 local function stop(text,g)
     if g and state.Generation~=g then return end
+    if g and valid(g) and not text:find("FOUND:",1,true) then
+        error("Recovery needed: "..text,0)
+    end
     state.Running=false;status(text)
 end
 local function horseman()
@@ -137,6 +142,35 @@ local function horseman()
         if norm(npc.Name):find("horseman",1,true) or (hum and norm(hum.DisplayName):find("horseman",1,true)) then return npc end
     end
 end
+local lastSkip=0
+skipDialogue=function(g)
+    if not valid(g) or os.clock()-lastSkip<.10 then return false end
+    local chat=pg:FindFirstChild("ChatGui")
+    local frame=chat and chat:FindFirstChild("Frame")
+    local text=frame and frame:FindFirstChild("TextLabel")
+    if not chat or not chat.Enabled or not text or not visible(text) then return false end
+    -- Never skip while choice buttons are visible or a quest panel is open.
+    for _,o in ipairs(frame:GetChildren()) do
+        if o:IsA("TextButton") and o.Visible then return false end
+    end
+    if quest() then return false end
+    lastSkip=os.clock()
+    if type(_G.M1Override)=="function" then
+        local ok=pcall(_G.M1Override)
+        if ok then return true end
+    end
+    local p,size=text.AbsolutePosition,text.AbsoluteSize
+    local x,y=p.X+size.X/2,p.Y+size.Y/2
+    if not chat.IgnoreGuiInset then
+        local inset=game:GetService("GuiService"):GetGuiInset();x=x+inset.X;y=y+inset.Y
+    end
+    local vim=game:GetService("VirtualInputManager")
+    vim:SendMouseMoveEvent(x,y,game)
+    vim:SendMouseButtonEvent(x,y,0,true,game,0)
+    task.wait(.02)
+    vim:SendMouseButtonEvent(x,y,0,false,game,0)
+    return true
+end
 local function dismissFinalDialogue(g)
     for attempt=1,8 do
         if not valid(g) then return false end
@@ -145,21 +179,7 @@ local function dismissFinalDialogue(g)
         local text=frame and frame:FindFirstChild("TextLabel")
         if not chat or not chat.Enabled or not text or not norm(text.Text):find("can you solve this one",1,true) then return true end
         status("Dismissing: CAN YOU SOLVE THIS ONE...?")
-        -- TalkTo installs this exact callback to advance the current dialogue.
-        local advanced=false
-        if type(_G.M1Override)=="function" then advanced=pcall(_G.M1Override) end
-        if not advanced then
-            local p,size=text.AbsolutePosition,text.AbsoluteSize
-            local x,y=p.X+size.X/2,p.Y+size.Y/2
-            if not chat.IgnoreGuiInset then
-                local inset=game:GetService("GuiService"):GetGuiInset();x=x+inset.X;y=y+inset.Y
-            end
-            local vim=game:GetService("VirtualInputManager")
-            vim:SendMouseMoveEvent(x,y,game)
-            vim:SendMouseButtonEvent(x,y,0,true,game,0)
-            task.wait(.02)
-            vim:SendMouseButtonEvent(x,y,0,false,game,0)
-        end
+        skipDialogue(g)
         if not pause(g,.12) then return false end
     end
     local chat=pg:FindFirstChild("ChatGui")
@@ -193,6 +213,7 @@ local function ensureDialogue(g)
         local deadline=os.clock()+4
         repeat
             if button("give me a new riddle") or button("what's my riddle?") then return true end
+            skipDialogue(g)
             if not pause(g,.04) then return false end
         until os.clock()>=deadline
     end
@@ -273,40 +294,53 @@ local function waitAfterReroll(g)
         local label=frame and frame:FindFirstChild("TextLabel")
         if label and norm(label.Text):find("can you solve this one",1,true) then return true end
         if button("what's my riddle?") then return true end
+        skipDialogue(g)
         if not pause(g,.04) then return false end
     until os.clock()>=deadline
     stop("Riddle response timed out",g);return false
 end
+local function inspectQuest(g)
+    if not ensureDialogue(g) then return end
+    local show=button("what's my riddle?")
+    if not show then error("Quest inspection choice unavailable",0) end
+    if not click(show,g) then return end
+    return waitQuest(g,4)
+end
 local function run(g)
     local attempt=0
     while valid(g) do
-        attempt=attempt+1
-        if not valid(g) then return end
         local q=quest()
+        if state.NeedsInspection and not q then
+            q=inspectQuest(g)
+            if not valid(g) then return end
+            if not q then error("Cannot verify pending quest; retrying inspection",0) end
+        end
         if q then
-            if q.target then stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return end
+            state.NeedsInspection=false
+            if q.target then
+                stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return
+            end
             if not closeQuest(q,g) then return end
         end
         if not ensureDialogue(g) then return end
         local reroll=button("give me a new riddle")
-        if not reroll then stop("Open the Horseman dialogue, then press F8",g);return end
-        status("Requesting riddle "..attempt)
+        if not reroll then error("Reroll choice unavailable",0) end
+        attempt=attempt+1;status("Requesting riddle "..attempt)
+        -- Preserve this flag across recovery; inspect before requesting another quest.
+        state.NeedsInspection=true
         if not click(reroll,g) or not waitAfterReroll(g) then return end
         if not dismissFinalDialogue(g) then return end
-        q=quest()
-        if not q then
-            if not ensureDialogue(g) then return end
-            local show=button("what's my riddle?")
-            if not show then stop("Quest inspection choice not available",g);return end
-            if not click(show,g) then return end
-            q=waitQuest(g,4)
-        end
+        q=quest() or inspectQuest(g)
         if not valid(g) then return end
-        if not q then stop("No readable reward panel; stopped safely",g);return end
-        if q.target then stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return end
+        if not q then error("Quest panel unreadable; retrying inspection",0) end
+        state.NeedsInspection=false
+        if q.target then
+            stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return
+        end
         status("Reward "..q.reward.."; rerolling")
         if not closeQuest(q,g) then return end
-        if not pause(g,.06) then return end
+        state.RecoveryFailures=0
+        if not pause(g,.04) then return end
     end
 end
 local connection
@@ -323,8 +357,18 @@ connection=UIS.InputBegan:Connect(function(input,processed)
     local g=state.Generation
     status(state.Running and "Starting..." or "Stopped by F8")
     if state.Running then task.spawn(function()
-        local ok,err=pcall(run,g)
-        if not ok then stop("Error: "..tostring(err),g) end
+        local failures=0
+        while valid(g) do
+            local ok,err=pcall(run,g)
+            if ok or not valid(g) then break end
+            failures=(state.RecoveryFailures==0) and 1 or failures+1
+            state.RecoveryFailures=failures
+            if failures>=5 then
+                state.Running=false;status("Stopped after 5 recovery failures: "..tostring(err));break
+            end
+            status("Recovering "..failures.."/5: "..tostring(err))
+            if not pause(g,math.min(.4*failures,2)) then break end
+        end
     end) end
 end)
 status("Ready: stand beside Horseman; press F8")
