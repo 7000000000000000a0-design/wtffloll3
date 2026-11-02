@@ -60,7 +60,9 @@ local function pause(seconds)
 end
 local function visible(o)
     local current=o
-    while current do
+    local depth=0
+    while current and depth<32 do
+        depth=depth+1
         local ok,v=pcall(function() return current.Visible end)
         if ok and v==false then return false end
         local success,isScreen=pcall(function() return current:IsA("ScreenGui") end)
@@ -139,79 +141,119 @@ local function closePanel(p)
     end
     return false
 end
-local function run()
-    if type(mouse1click)~="function" then log("Missing mouse1click; cannot click buttons.");return end
-    if type(mousemoveabs)~="function" then log("Missing mousemoveabs; cannot move to buttons.");return end
-    log("Started. Keep the Horseman dialogue open. F8 stops.")
-    for attempt=1,state.MaxAttempts do
-        if stopped() then return end
-        local existing=panel()
-        if existing then
-            if existing.target then log("Found: win a public match, reward 10 candy. Stopped.");return end
-            if not closePanel(existing) then log("Close the riddle panel and press F8. Stopped.");return end
-        end
-        local reroll=findText("give me a new riddle")
-        if not reroll then log("Open the Horseman dialogue with 'Give me a new riddle', then press F8. Stopped.");return end
-        if not click(reroll) or not pause(1.2) then return end
-        local p=panel()
-        if not p then
-            local show=findText("what's my riddle?")
-            if not show then
-                log("Riddle requested. Reopen the Horseman dialogue to inspect it, then press F8. Stopped.");return
-            end
-            if not click(show) then return end
-            p=waitPanel(4)
-        end
-        if not p then log("No readable quest panel appeared. Stopped without more rerolls.");return end
-        log("Attempt "..attempt..": reward "..tostring(p.reward or "unreadable")..(p.objective and ", public match" or ", other objective"))
-        if p.target then log("Found the 10-candy public-match quest. Stopped.");return end
-        if not p.reward then log("Reward unreadable; stopping to avoid skipping a valid quest.");return end
-        if not closePanel(p) then log("Could not close quest panel. Stopped.");return end
-        if not pause(1) then return end
-    end
-    log("Attempt limit reached. Stopped.")
-end
+local phase="idle"
+local deadline=0
+local pending=nil
+local afterClick=nil
+local attempts=0
+local connection
+local lastKey=false
+local lastStep=0
 setEnabled=function(on)
     on=on==true and state.Alive
-    if state.Running~=on then
-        state.Generation=state.Generation+1
-        state.Running=on
-        if on then log("Starting: looking for riddle button") end
+    state.Running=on
+    pending=nil
+    phase=on and "inspect" or "idle"
+    deadline=0
+    if on then attempts=0;log("Looking for quest/dialogue...") end
+end
+local function finish(message)
+    setEnabled(false);log(message)
+end
+local function queueClick(object,nextPhase,delay)
+    if not object or not visible(object) then return false end
+    if type(mousemoveabs)~="function" or type(mouse1click)~="function" then
+        finish("Missing mousemoveabs or mouse1click");return false
+    end
+    local pos,size=object.AbsolutePosition,object.AbsoluteSize
+    if not pos or not size or size.X<=0 or size.Y<=0 then
+        finish("Button coordinates unavailable");return false
+    end
+    mousemoveabs(math.floor(pos.X+size.X/2+state.OffsetX),math.floor(pos.Y+size.Y/2+state.OffsetY))
+    pending=object;afterClick=nextPhase;state.AfterDelay=delay or 1
+    phase="click";deadline=os.clock()+.2
+    log("Moving to: "..tostring(object.Text or object.Name))
+    return true
+end
+local function closeQuest(p,nextPhase)
+    for _,o in ipairs(textObjects(p.root)) do
+        if normalize(o.Text)=="x" then return queueClick(o,nextPhase,.6) end
+    end
+    finish("Quest close button unreadable");return false
+end
+local function update()
+    local down=keyDown()
+    local focused=true
+    if type(isrbxactive)=="function" then
+        local ok,value=pcall(isrbxactive);focused=ok and value==true
+    end
+    if down and not lastKey and focused then setEnabled(not state.Running) end
+    lastKey=down
+    updateNotice()
+    if not state.Running or not focused then return end
+    local now=os.clock()
+    if now<deadline then return end
+    if phase=="click" then
+        if pending and visible(pending) then
+            mouse1click()
+            log("Clicked: "..tostring(pending.Text or pending.Name))
+            pending=nil;phase=afterClick;deadline=now+state.AfterDelay
+        else finish("Button closed before click") end
+        return
+    end
+    if phase=="inspect" then
+        log("Checking visible quest...")
+        local p=panel()
+        if p then
+            if p.target then finish("FOUND: public match, 10 candy");return end
+            if not p.reward then finish("Quest reward unreadable");return end
+            closeQuest(p,"reroll");return
+        end
+        phase="reroll"
+    end
+    if phase=="reroll" then
+        if attempts>=state.MaxAttempts then finish("Attempt limit reached");return end
+        log("Finding Give me a new riddle...")
+        local button=findText("give me a new riddle")
+        if not button then finish("Riddle button not readable; open dialogue");return end
+        attempts=attempts+1
+        queueClick(button,"show",1.2);return
+    end
+    if phase=="show" then
+        log("Reading new quest...")
+        local p=panel()
+        if p then phase="check";return end
+        local button=findText("what's my riddle?")
+        if not button then finish("Reopen dialogue, then press F8");return end
+        queueClick(button,"check",1);return
+    end
+    if phase=="check" then
+        log("Checking reward and objective...")
+        local p=panel()
+        if not p then finish("Quest panel not readable");return end
+        if p.target then finish("FOUND: public match, 10 candy");return end
+        if not p.reward then finish("Quest reward unreadable");return end
+        log("Attempt "..attempts..": "..p.reward.." candy")
+        closeQuest(p,"reroll")
     end
 end
 function state.Destroy()
-    if not state.Alive then return end
-    setEnabled(false);state.Alive=false
+    state.Running=false;state.Alive=false
+    if connection then pcall(function() connection:Disconnect() end) end
     for _,d in ipairs(noticeObjects) do pcall(function() d:Remove() end) end
     if env.CandyQuestReroll==state then env.CandyQuestReroll=nil end
 end
--- Independent key polling keeps F8 responsive during GUI waits.
-task.spawn(function()
-    local held=keyDown()
-    while state.Alive do
-        local down=keyDown()
-        local focused=true
-        if type(isrbxactive)=="function" then
-            local success,active=pcall(isrbxactive)
-            focused=success and active==true
-        end
-        if down and not held and focused then setEnabled(not state.Running) end
-        held=down
+connection=game:GetService("RunService").Heartbeat:Connect(function()
+    if not state.Alive then return end
+    local now=os.clock()
+    if now-lastStep<.04 then return end
+    lastStep=now
+    local ok,err=pcall(update)
+    if not ok then
+        finish("Error: "..tostring(err))
         pcall(updateNotice)
-        task.wait(.03)
     end
 end)
-task.spawn(function()
-    while state.Alive do
-        if state.Running then
-            local generation=state.Generation
-            activeGeneration=generation
-            local ok,err=pcall(run)
-            if state.Generation==generation then setEnabled(false) end
-            if not ok then log("Stopped: "..tostring(err)) end
-        end
-        task.wait(.1)
-    end
-end)
-log("Ready. Open the Horseman dialogue and press F8 to start. Press F8 again to stop. Stops automatically on the 10-candy public-match quest.")
+log("Ready: open Horseman dialogue; F8 starts/stops")
+pcall(updateNotice)
 
