@@ -1,8 +1,13 @@
 -- Matcha candy quest reroller. Open the Horseman dialogue before starting.
 -- F8 stops. Only clicks visible dialogue buttons; no remote arguments are guessed.
 local env=(getgenv and getgenv()) or _G
-if env.CandyQuestReroll then env.CandyQuestReroll.Running=false end
-local state={Running=true,MaxAttempts=40,OffsetX=0,OffsetY=0}
+if env.CandyQuestReroll then
+    if env.CandyQuestReroll.Destroy then pcall(env.CandyQuestReroll.Destroy)
+    else env.CandyQuestReroll.Running=false end
+end
+local state={Running=false,MaxAttempts=40,OffsetX=0,OffsetY=0,Alive=true,Generation=0}
+local activeGeneration=0
+local setEnabled
 env.CandyQuestReroll=state
 assert(task and task.spawn and task.wait,"task APIs are required")
 assert(type(mouse1click)=="function","mouse1click is required")
@@ -11,8 +16,8 @@ local player=game:GetService("Players").LocalPlayer
 local function log(s) print("[Candy Quests] "..s) end
 local function normalize(s) return tostring(s or ""):lower():gsub("’","'"):gsub("%s+"," ") end
 local function stopped()
-    if type(iskeypressed)=="function" and iskeypressed(0x77) then state.Running=false end
-    return not state.Running
+    if type(iskeypressed)=="function" and iskeypressed(0x77) then setEnabled(false) end
+    return not state.Alive or not state.Running or activeGeneration~=state.Generation
 end
 local function pause(seconds)
     local untilTime=os.clock()+seconds
@@ -129,9 +134,53 @@ local function run()
     end
     log("Attempt limit reached. Stopped.")
 end
+-- Drawing-based Nova menu, already used by the Matcha timing script.
+local url="https://raw.githubusercontent.com/Martinikaws/Nova/88f5bd44551d03d6a01ba07b761519eb3d8ccb34/Nova.lua"
+local source
+if type(httpget)=="function" then source=httpget(url) else source=game:HttpGet(url) end
+local library=loadstring(source)()
+local Nova=library or _G.Nova
+assert(Nova,"Nova menu failed to load")
+local window,toggle
+local syncing=false
+setEnabled=function(on)
+    on=on==true and state.Alive
+    if state.Running~=on then
+        state.Generation=state.Generation+1
+        state.Running=on
+        log(on and "Toggle ON" or "Toggle OFF")
+    end
+    if toggle and toggle.Value~=on and not syncing then
+        syncing=true
+        local ok=pcall(function() toggle:Set(on) end)
+        if not ok then toggle.Value=on end
+        syncing=false
+    end
+end
+function state.Destroy()
+    if not state.Alive then return end
+    setEnabled(false);state.Alive=false
+    if window then pcall(function() window:Destroy() end) end
+    if env.CandyQuestReroll==state then env.CandyQuestReroll=nil end
+end
+window=Nova:CreateWindow({Title="Candy Quests",Folder="CandyQuestReroll",ConfigName="menu",ToggleKey="RightShift",Open=true,Size={400,300},OnUnload=function() state.Destroy() end})
+local tab=window:Tab("Candy Quests")
+toggle=tab:Toggle({Name="Auto 10 Candy Public Quest",Default=false,Callback=function(on)
+    if not syncing then setEnabled(on) end
+end})
+-- Always start OFF, even when the menu restores saved options.
+setEnabled(false)
 task.spawn(function()
-    local ok,err=pcall(run)
-    state.Running=false
-    if not ok then log("Stopped: "..tostring(err)) end
+    while state.Alive do
+        if state.Running then
+            local generation=state.Generation
+            activeGeneration=generation
+            local ok,err=pcall(run)
+            if state.Generation==generation then setEnabled(false) end
+            if not ok then log("Stopped: "..tostring(err)) end
+        end
+        task.wait(.1)
+    end
 end)
+log("Menu ready. Open the Horseman dialogue and enable the toggle. F8 stops; Right Shift shows/hides the menu.")
 
