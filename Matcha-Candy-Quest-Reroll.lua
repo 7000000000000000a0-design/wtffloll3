@@ -84,7 +84,7 @@ local function refreshScan()
         if now<scan.nextReset then return end
         local root=gui()
         scan.queue=root and {root} or {};scan.index=1;scan.texts={};scan.visited=0
-        scan.nextReset=now+.5
+        scan.nextReset=math.huge
     end
     for _=1,45 do
         local o=scan.queue[scan.index]
@@ -99,6 +99,7 @@ local function refreshScan()
             end
         end
     end
+    if scan.index>#scan.queue then scan.nextReset=now+2 end
 end
 local function textObjects(root)
     local result={}
@@ -230,10 +231,6 @@ local function update()
         else finish("Button closed before click") end
         return
     end
-    if phase=="inspect" and scan.index<=#scan.queue then
-        log("Reading GUI: "..scan.visited.." objects, "..#scan.texts.." texts")
-        return
-    end
     if phase=="inspect" then
         log("Checking visible quest...")
         local p=panel()
@@ -249,7 +246,7 @@ local function update()
         log("Finding Give me a new riddle...")
         local button=findText("give me a new riddle")
         if not button then
-            log("Waiting for button: "..#scan.texts.." texts read")
+            log("Finding button: "..scan.visited.." scanned, "..#scan.texts.." texts")
             phase="inspect";deadline=now+.5;return
         end
         attempts=attempts+1
