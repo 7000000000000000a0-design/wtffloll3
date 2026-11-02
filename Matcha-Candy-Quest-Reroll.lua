@@ -86,7 +86,7 @@ local function refreshScan()
         scan.queue=root and {root} or {};scan.index=1;scan.texts={};scan.visited=0
         scan.nextReset=math.huge
     end
-    for _=1,45 do
+    for _=1,15 do
         local o=scan.queue[scan.index]
         if not o then break end
         scan.index=scan.index+1;scan.visited=scan.visited+1
@@ -213,14 +213,7 @@ local function closeQuest(p,nextPhase)
     finish("Quest close button unreadable");return false
 end
 local function update()
-    local down=keyDown()
-    local focused=true
-    if type(isrbxactive)=="function" then
-        local ok,value=pcall(isrbxactive);focused=ok and value==true
-    end
-    if down and not lastKey and focused then setEnabled(not state.Running) end
-    lastKey=down
-    if not state.Running or not focused then return end
+    if not state.Running then return end
     local now=tick and tick() or os.clock()
     if now<deadline then return end
     if phase=="click" then
@@ -276,17 +269,23 @@ function state.Destroy()
     for _,d in ipairs(noticeObjects) do pcall(function() d:Remove() end) end
     if env.CandyQuestReroll==state then env.CandyQuestReroll=nil end
 end
+local keyHeld=false
+local heartbeatCount=0
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     if not state.Alive then return end
-    local now=os.clock()
-    if now-lastStep<.04 then return end
-    lastStep=now
+    heartbeatCount=heartbeatCount+1
+    -- Poll F8 every heartbeat, even when OFF; no GUI scan or clock can block it.
+    local okKey,down=pcall(keyDown)
+    down=okKey and down==true
+    if down and not keyHeld then setEnabled(not state.Running) end
+    keyHeld=down
+    pcall(updateNotice)
+    if not state.Running then return end
+    -- Advance a smaller GUI batch, then the reroll state machine.
     local scanned,scanError=pcall(refreshScan)
-    if not scanned then finish("GUI scan error: "..tostring(scanError)) end
+    if not scanned then finish("GUI scan error: "..tostring(scanError));return end
     local ok,err=pcall(update)
-    if not ok then
-        finish("Error: "..tostring(err))
-    end
+    if not ok then finish("Error: "..tostring(err)) end
     pcall(updateNotice)
 end)
 log("Ready: open Horseman dialogue; F8 starts/stops")
