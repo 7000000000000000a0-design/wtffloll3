@@ -5,7 +5,7 @@ local Players=game:GetService("Players")
 local UIS=game:GetService("UserInputService")
 local player=Players.LocalPlayer
 local pg=player:WaitForChild("PlayerGui")
-local state={Alive=true,Running=false,Generation=0,MaxAttempts=40}
+local state={Alive=true,Running=false,Generation=0}
 env.VoltCandyQuests=state
 local ui=Instance.new("ScreenGui");ui.Name="VoltCandyQuestStatus";ui.ResetOnSpawn=false;ui.IgnoreGuiInset=true;ui.DisplayOrder=10000;ui.Parent=pg
 local frame=Instance.new("Frame");frame.AnchorPoint=Vector2.new(1,0);frame.Position=UDim2.new(1,-16,0,20);frame.Size=UDim2.fromOffset(380,80);frame.BackgroundColor3=Color3.fromRGB(23,25,34);frame.BorderSizePixel=0;frame.Parent=ui
@@ -68,11 +68,12 @@ local function quest()
             local root=o.Parent
             for _=1,4 do
                 if not root or root==pg then break end
-                local reward,public,close
+                local reward,public,ranked,close
                 for _,t in ipairs(root:GetDescendants()) do
                     if (t:IsA("TextLabel") or t:IsA("TextButton")) and visible(t) then
                         local text=norm(t.Text)
                         if text:find("win a public match",1,true) then public=true end
+                        if text:find("win a ranked match",1,true) then ranked=true end
                         local n=text:match("reward%s*:%s*(%d+)")
                         if n then reward=tonumber(n) end
                         if t:IsA("TextButton") and (text=="x" or text=="×") then close=t end
@@ -82,7 +83,7 @@ local function quest()
                     close=findQuestClose(root,o) or close
                     -- The red X may be a sibling of the content frame.
                     if not close and root.Parent and root.Parent~=pg then close=findQuestClose(root.Parent,o) end
-                    return {reward=reward,target=reward==10 and public==true,close=close,root=root,title=o}
+                    return {reward=reward,target=(reward==10 and public==true) or ranked==true,ranked=ranked==true,close=close,root=root,title=o}
                 end
                 root=root.Parent
             end
@@ -277,11 +278,13 @@ local function waitAfterReroll(g)
     stop("Riddle response timed out",g);return false
 end
 local function run(g)
-    for attempt=1,state.MaxAttempts do
+    local attempt=0
+    while valid(g) do
+        attempt=attempt+1
         if not valid(g) then return end
         local q=quest()
         if q then
-            if q.target then stop("FOUND: public match, 10 candy",g);return end
+            if q.target then stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return end
             if not closeQuest(q,g) then return end
         end
         if not ensureDialogue(g) then return end
@@ -300,12 +303,11 @@ local function run(g)
         end
         if not valid(g) then return end
         if not q then stop("No readable reward panel; stopped safely",g);return end
-        if q.target then stop("FOUND: public match, 10 candy",g);return end
+        if q.target then stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return end
         status("Reward "..q.reward.."; rerolling")
         if not closeQuest(q,g) then return end
         if not pause(g,.06) then return end
     end
-    stop("40 attempts reached; press F8 to continue",g)
 end
 local connection
 function state.Destroy()
