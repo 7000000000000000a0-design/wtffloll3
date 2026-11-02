@@ -76,13 +76,43 @@ local function visible(o)
     return true
 end
 local function gui() return player:FindFirstChild("PlayerGui") end
+-- Read a small part of the GUI tree per heartbeat; never block on GetDescendants.
+local scan={queue={},index=1,texts={},nextReset=0,visited=0}
+local function refreshScan()
+    local now=tick and tick() or os.clock()
+    if scan.index>#scan.queue then
+        if now<scan.nextReset then return end
+        local root=gui()
+        scan.queue=root and {root} or {};scan.index=1;scan.texts={};scan.visited=0
+        scan.nextReset=now+.5
+    end
+    for _=1,45 do
+        local o=scan.queue[scan.index]
+        if not o then break end
+        scan.index=scan.index+1;scan.visited=scan.visited+1
+        local ok,text=pcall(function() return o.Text end)
+        if ok and type(text)=="string" and text~="" then table.insert(scan.texts,o) end
+        local success,children=pcall(function() return o:GetChildren() end)
+        if success and children then
+            for _,child in ipairs(children) do
+                if #scan.queue<6000 then table.insert(scan.queue,child) end
+            end
+        end
+    end
+end
 local function textObjects(root)
     local result={}
-    if not root then return result end
-    for _,o in ipairs(root:GetDescendants()) do
-        if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
-            if visible(o) then table.insert(result,o) end
+    for _,o in ipairs(scan.texts) do
+        local belongs=root==gui()
+        if not belongs then
+            local current=o
+            for _=1,16 do
+                if current==root then belongs=true;break end
+                if not current then break end
+                current=current.Parent
+            end
         end
+        if belongs and visible(o) then table.insert(result,o) end
     end
     return result
 end
@@ -171,7 +201,7 @@ local function queueClick(object,nextPhase,delay)
     end
     mousemoveabs(math.floor(pos.X+size.X/2+state.OffsetX),math.floor(pos.Y+size.Y/2+state.OffsetY))
     pending=object;afterClick=nextPhase;state.AfterDelay=delay or 1
-    phase="click";deadline=os.clock()+.2
+    phase="click";deadline=(tick and tick() or os.clock())+.2
     log("Moving to: "..tostring(object.Text or object.Name))
     return true
 end
@@ -189,9 +219,8 @@ local function update()
     end
     if down and not lastKey and focused then setEnabled(not state.Running) end
     lastKey=down
-    updateNotice()
     if not state.Running or not focused then return end
-    local now=os.clock()
+    local now=tick and tick() or os.clock()
     if now<deadline then return end
     if phase=="click" then
         if pending and visible(pending) then
@@ -199,6 +228,10 @@ local function update()
             log("Clicked: "..tostring(pending.Text or pending.Name))
             pending=nil;phase=afterClick;deadline=now+state.AfterDelay
         else finish("Button closed before click") end
+        return
+    end
+    if phase=="inspect" and scan.index<=#scan.queue then
+        log("Reading GUI: "..scan.visited.." objects, "..#scan.texts.." texts")
         return
     end
     if phase=="inspect" then
@@ -215,7 +248,10 @@ local function update()
         if attempts>=state.MaxAttempts then finish("Attempt limit reached");return end
         log("Finding Give me a new riddle...")
         local button=findText("give me a new riddle")
-        if not button then finish("Riddle button not readable; open dialogue");return end
+        if not button then
+            log("Waiting for button: "..#scan.texts.." texts read")
+            phase="inspect";deadline=now+.5;return
+        end
         attempts=attempts+1
         queueClick(button,"show",1.2);return
     end
@@ -248,11 +284,13 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
     local now=os.clock()
     if now-lastStep<.04 then return end
     lastStep=now
+    local scanned,scanError=pcall(refreshScan)
+    if not scanned then finish("GUI scan error: "..tostring(scanError)) end
     local ok,err=pcall(update)
     if not ok then
         finish("Error: "..tostring(err))
-        pcall(updateNotice)
     end
+    pcall(updateNotice)
 end)
 log("Ready: open Horseman dialogue; F8 starts/stops")
 pcall(updateNotice)
