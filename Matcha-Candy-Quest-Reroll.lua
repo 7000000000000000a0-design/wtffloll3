@@ -11,11 +11,45 @@ local setEnabled
 env.CandyQuestReroll=state
 assert(task and task.spawn and task.wait,"task APIs are required")
 assert(type(iskeypressed)=="function","Matcha iskeypressed is required for F8")
-assert(type(mouse1click)=="function","mouse1click is required")
-assert(type(mousemoveabs)=="function","This script requires Matcha mousemoveabs for GUI clicks")
 local player=game:GetService("Players").LocalPlayer
-local function log(s) print("[Candy Quests] "..s) end
-local function normalize(s) return tostring(s or ""):lower():gsub("’","'"):gsub("%s+"," ") end
+local noticeObjects={}
+local status="Ready: open dialogue, then press F8"
+local function log(s)
+    status=tostring(s)
+    print("[Candy Quests] "..status)
+end
+local function makeNotice(kind,props)
+    if not Drawing or type(Drawing.new)~="function" then return end
+    local d=Drawing.new(kind)
+    table.insert(noticeObjects,d)
+    for k,v in pairs(props) do pcall(function() d[k]=v end) end
+    return d
+end
+local bg=makeNotice("Square",{Filled=true,Color=Color3.fromRGB(20,23,32),Transparency=.93,ZIndex=2000,Visible=true})
+local title=makeNotice("Text",{Size=16,Font=2,Outline=true,ZIndex=2001,Visible=true})
+local detail=makeNotice("Text",{Size=13,Font=2,Outline=true,Color=Color3.fromRGB(235,235,240),ZIndex=2001,Visible=true})
+local function updateNotice()
+    if not bg or not title or not detail then return end
+    local cam=workspace.CurrentCamera
+    local size=cam and cam.ViewportSize
+    local width=size and size.X or 1280
+    local x=math.max(8,width-386)
+    bg.Position=Vector2.new(x,20);bg.Size=Vector2.new(370,76)
+    title.Position=Vector2.new(x+12,29)
+    title.Text="Candy Quests: "..(state.Running and "ON" or "OFF").."  [F8]"
+    title.Color=state.Running and Color3.fromRGB(100,240,157) or Color3.fromRGB(255,160,110)
+    detail.Position=Vector2.new(x+12,54)
+    local msg=status
+    if #msg>49 then msg=msg:sub(1,46).."..." end
+    detail.Text=msg
+end
+local function keyDown()
+    local ok,value=pcall(iskeypressed,0x77)
+    if ok and value==true then return true end
+    ok,value=pcall(iskeypressed,"F8")
+    return ok and value==true
+end
+local function normalize(s) return tostring(s or ""):lower():gsub("’","'"):gsub("<[^>]+>",""):gsub("%s+"," "):gsub("^%s+",""):gsub("%s+$","") end
 local function stopped()
     return not state.Alive or not state.Running or activeGeneration~=state.Generation
 end
@@ -63,6 +97,7 @@ local function click(o)
     end
     local pos,size=o.AbsolutePosition,o.AbsoluteSize
     if not pos or not size or size.X<=0 or size.Y<=0 then error("Cannot read button coordinates") end
+    log("Clicking: "..tostring(o.Text or o.Name or "button"))
     mousemoveabs(math.floor(pos.X+size.X/2+state.OffsetX),math.floor(pos.Y+size.Y/2+state.OffsetY))
     if not pause(.15) then return false end
     mouse1click();return true
@@ -105,6 +140,8 @@ local function closePanel(p)
     return false
 end
 local function run()
+    if type(mouse1click)~="function" then log("Missing mouse1click; cannot click buttons.");return end
+    if type(mousemoveabs)~="function" then log("Missing mousemoveabs; cannot move to buttons.");return end
     log("Started. Keep the Horseman dialogue open. F8 stops.")
     for attempt=1,state.MaxAttempts do
         if stopped() then return end
@@ -139,20 +176,20 @@ setEnabled=function(on)
     if state.Running~=on then
         state.Generation=state.Generation+1
         state.Running=on
-        log(on and "ON" or "OFF")
+        if on then log("Starting: looking for riddle button") end
     end
 end
 function state.Destroy()
     if not state.Alive then return end
     setEnabled(false);state.Alive=false
+    for _,d in ipairs(noticeObjects) do pcall(function() d:Remove() end) end
     if env.CandyQuestReroll==state then env.CandyQuestReroll=nil end
 end
 -- Independent key polling keeps F8 responsive during GUI waits.
 task.spawn(function()
-    local held=iskeypressed(0x77)==true
+    local held=keyDown()
     while state.Alive do
-        local ok,down=pcall(iskeypressed,0x77)
-        down=ok and down==true
+        local down=keyDown()
         local focused=true
         if type(isrbxactive)=="function" then
             local success,active=pcall(isrbxactive)
@@ -160,6 +197,7 @@ task.spawn(function()
         end
         if down and not held and focused then setEnabled(not state.Running) end
         held=down
+        pcall(updateNotice)
         task.wait(.03)
     end
 end)
