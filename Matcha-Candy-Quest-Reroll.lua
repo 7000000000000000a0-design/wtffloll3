@@ -1,5 +1,5 @@
 -- Matcha candy quest reroller. Open the Horseman dialogue before starting.
--- F8 stops. Only clicks visible dialogue buttons; no remote arguments are guessed.
+-- F8 starts/stops. Automatically stops on the 10-candy public-match quest.
 local env=(getgenv and getgenv()) or _G
 if env.CandyQuestReroll then
     if env.CandyQuestReroll.Destroy then pcall(env.CandyQuestReroll.Destroy)
@@ -10,13 +10,13 @@ local activeGeneration=0
 local setEnabled
 env.CandyQuestReroll=state
 assert(task and task.spawn and task.wait,"task APIs are required")
+assert(type(iskeypressed)=="function","Matcha iskeypressed is required for F8")
 assert(type(mouse1click)=="function","mouse1click is required")
 assert(type(mousemoveabs)=="function","This script requires Matcha mousemoveabs for GUI clicks")
 local player=game:GetService("Players").LocalPlayer
 local function log(s) print("[Candy Quests] "..s) end
 local function normalize(s) return tostring(s or ""):lower():gsub("’","'"):gsub("%s+"," ") end
 local function stopped()
-    if type(iskeypressed)=="function" and iskeypressed(0x77) then setEnabled(false) end
     return not state.Alive or not state.Running or activeGeneration~=state.Generation
 end
 local function pause(seconds)
@@ -111,16 +111,16 @@ local function run()
         local existing=panel()
         if existing then
             if existing.target then log("Found: win a public match, reward 10 candy. Stopped.");return end
-            if not closePanel(existing) then log("Close the riddle panel and rerun. Stopped.");return end
+            if not closePanel(existing) then log("Close the riddle panel and press F8. Stopped.");return end
         end
         local reroll=findText("give me a new riddle")
-        if not reroll then log("Open the Horseman dialogue with 'Give me a new riddle', then rerun. Stopped.");return end
+        if not reroll then log("Open the Horseman dialogue with 'Give me a new riddle', then press F8. Stopped.");return end
         if not click(reroll) or not pause(1.2) then return end
         local p=panel()
         if not p then
             local show=findText("what's my riddle?")
             if not show then
-                log("Riddle requested. Reopen the Horseman dialogue to inspect it, then rerun. Stopped.");return
+                log("Riddle requested. Reopen the Horseman dialogue to inspect it, then press F8. Stopped.");return
             end
             if not click(show) then return end
             p=waitPanel(4)
@@ -134,42 +134,35 @@ local function run()
     end
     log("Attempt limit reached. Stopped.")
 end
--- Drawing-based Nova menu, already used by the Matcha timing script.
-local url="https://raw.githubusercontent.com/Martinikaws/Nova/88f5bd44551d03d6a01ba07b761519eb3d8ccb34/Nova.lua"
-local source
-if type(httpget)=="function" then source=httpget(url) else source=game:HttpGet(url) end
-local library=loadstring(source)()
-local Nova=library or _G.Nova
-assert(Nova,"Nova menu failed to load")
-local window,toggle
-local syncing=false
 setEnabled=function(on)
     on=on==true and state.Alive
     if state.Running~=on then
         state.Generation=state.Generation+1
         state.Running=on
-        log(on and "Toggle ON" or "Toggle OFF")
-    end
-    if toggle and toggle.Value~=on and not syncing then
-        syncing=true
-        local ok=pcall(function() toggle:Set(on) end)
-        if not ok then toggle.Value=on end
-        syncing=false
+        log(on and "ON" or "OFF")
     end
 end
 function state.Destroy()
     if not state.Alive then return end
     setEnabled(false);state.Alive=false
-    if window then pcall(function() window:Destroy() end) end
     if env.CandyQuestReroll==state then env.CandyQuestReroll=nil end
 end
-window=Nova:CreateWindow({Title="Candy Quests",Folder="CandyQuestReroll",ConfigName="menu",ToggleKey="RightShift",Open=true,Size={400,300},OnUnload=function() state.Destroy() end})
-local tab=window:Tab("Candy Quests")
-toggle=tab:Toggle({Name="Auto 10 Candy Public Quest",Default=false,Callback=function(on)
-    if not syncing then setEnabled(on) end
-end})
--- Always start OFF, even when the menu restores saved options.
-setEnabled(false)
+-- Independent key polling keeps F8 responsive during GUI waits.
+task.spawn(function()
+    local held=iskeypressed(0x77)==true
+    while state.Alive do
+        local ok,down=pcall(iskeypressed,0x77)
+        down=ok and down==true
+        local focused=true
+        if type(isrbxactive)=="function" then
+            local success,active=pcall(isrbxactive)
+            focused=success and active==true
+        end
+        if down and not held and focused then setEnabled(not state.Running) end
+        held=down
+        task.wait(.03)
+    end
+end)
 task.spawn(function()
     while state.Alive do
         if state.Running then
@@ -182,5 +175,5 @@ task.spawn(function()
         task.wait(.1)
     end
 end)
-log("Menu ready. Open the Horseman dialogue and enable the toggle. F8 stops; Right Shift shows/hides the menu.")
+log("Ready. Open the Horseman dialogue and press F8 to start. Press F8 again to stop. Stops automatically on the 10-candy public-match quest.")
 
