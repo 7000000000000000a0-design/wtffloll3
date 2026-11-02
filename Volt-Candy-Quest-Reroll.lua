@@ -136,7 +136,39 @@ local function horseman()
         if norm(npc.Name):find("horseman",1,true) or (hum and norm(hum.DisplayName):find("horseman",1,true)) then return npc end
     end
 end
+local function dismissFinalDialogue(g)
+    for attempt=1,4 do
+        if not valid(g) then return false end
+        local chat=pg:FindFirstChild("ChatGui")
+        local frame=chat and chat:FindFirstChild("Frame")
+        local text=frame and frame:FindFirstChild("TextLabel")
+        if not chat or not chat.Enabled or not text or not norm(text.Text):find("can you solve this one",1,true) then return true end
+        status("Dismissing: CAN YOU SOLVE THIS ONE...?")
+        -- TalkTo installs this exact callback to advance the current dialogue.
+        local advanced=false
+        if type(_G.M1Override)=="function" then advanced=pcall(_G.M1Override) end
+        if not advanced then
+            local p,size=text.AbsolutePosition,text.AbsoluteSize
+            local x,y=p.X+size.X/2,p.Y+size.Y/2
+            if not chat.IgnoreGuiInset then
+                local inset=game:GetService("GuiService"):GetGuiInset();x=x+inset.X;y=y+inset.Y
+            end
+            local vim=game:GetService("VirtualInputManager")
+            vim:SendMouseMoveEvent(x,y,game)
+            vim:SendMouseButtonEvent(x,y,0,true,game,0)
+            task.wait(.05)
+            vim:SendMouseButtonEvent(x,y,0,false,game,0)
+        end
+        if not pause(g,.7) then return false end
+    end
+    local chat=pg:FindFirstChild("ChatGui")
+    if chat and chat.Enabled then
+        stop("Final dialogue did not dismiss",g);return false
+    end
+    return true
+end
 local function ensureDialogue(g)
+    if not dismissFinalDialogue(g) then return false end
     if button("give me a new riddle") or button("what's my riddle?") then return true end
     local npc=horseman()
     if not npc then stop("Horseman NPC not found nearby",g);return false end
@@ -240,6 +272,7 @@ local function run(g)
         if not reroll then stop("Open the Horseman dialogue, then press F8",g);return end
         status("Requesting riddle "..attempt)
         if not click(reroll,g) or not pause(g,1.4) then return end
+        if not dismissFinalDialogue(g) then return end
         q=quest()
         if not q then
             if not ensureDialogue(g) then return end
