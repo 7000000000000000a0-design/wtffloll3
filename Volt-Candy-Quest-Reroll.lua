@@ -119,11 +119,9 @@ local function click(o,g)
     vim:SendMouseButtonEvent(x,y,0,false,game,0)
     return valid(g)
 end
-local skipDialogue
 local function waitQuest(g,seconds)
     local finish=os.clock()+seconds
     repeat local q=quest();if q then return q end
-        if skipDialogue then skipDialogue(g) end
         if not pause(g,.04) then return end
     until os.clock()>=finish
 end
@@ -142,51 +140,40 @@ local function horseman()
         if norm(npc.Name):find("horseman",1,true) or (hum and norm(hum.DisplayName):find("horseman",1,true)) then return npc end
     end
 end
-local lastSkip=0
-skipDialogue=function(g)
-    if not valid(g) or os.clock()-lastSkip<.10 then return false end
-    local chat=pg:FindFirstChild("ChatGui")
-    local frame=chat and chat:FindFirstChild("Frame")
-    local text=frame and frame:FindFirstChild("TextLabel")
-    if not chat or not chat.Enabled or not text or not visible(text) then return false end
-    -- Never skip while choice buttons are visible or a quest panel is open.
-    for _,o in ipairs(frame:GetChildren()) do
-        if o:IsA("TextButton") and o.Visible then return false end
-    end
-    if quest() then return false end
-    lastSkip=os.clock()
-    if type(_G.M1Override)=="function" then
-        local ok=pcall(_G.M1Override)
-        if ok then return true end
-    end
-    local p,size=text.AbsolutePosition,text.AbsoluteSize
-    local x,y=p.X+size.X/2,p.Y+size.Y/2
-    if not chat.IgnoreGuiInset then
-        local inset=game:GetService("GuiService"):GetGuiInset();x=x+inset.X;y=y+inset.Y
-    end
-    local vim=game:GetService("VirtualInputManager")
-    vim:SendMouseMoveEvent(x,y,game)
-    vim:SendMouseButtonEvent(x,y,0,true,game,0)
-    task.wait(.02)
-    vim:SendMouseButtonEvent(x,y,0,false,game,0)
-    return true
-end
 local function dismissFinalDialogue(g)
-    for attempt=1,8 do
+    local started=os.clock()
+    local lastClick=0
+    repeat
         if not valid(g) then return false end
         local chat=pg:FindFirstChild("ChatGui")
         local frame=chat and chat:FindFirstChild("Frame")
         local text=frame and frame:FindFirstChild("TextLabel")
         if not chat or not chat.Enabled or not text or not norm(text.Text):find("can you solve this one",1,true) then return true end
-        status("Dismissing: CAN YOU SOLVE THIS ONE...?")
-        skipDialogue(g)
-        if not pause(g,.12) then return false end
-    end
-    local chat=pg:FindFirstChild("ChatGui")
-    if chat and chat.Enabled then
-        stop("Final dialogue did not dismiss",g);return false
-    end
-    return true
+        local content=text.ContentText or text.Text
+        local count=(utf8 and utf8.len and utf8.len(content)) or #content
+        local max=text.MaxVisibleGraphemes
+        local complete=type(max)=="number" and (max<0 or max>=count)
+        if complete and os.clock()-lastClick>.3 then
+            status("Closing completed final dialogue...")
+            lastClick=os.clock()
+            local advanced=false
+            if type(_G.M1Override)=="function" then advanced=pcall(_G.M1Override) end
+            if not advanced then
+                local p,size=text.AbsolutePosition,text.AbsoluteSize
+                local x,y=p.X+size.X/2,p.Y+size.Y/2
+                if not chat.IgnoreGuiInset then
+                    local inset=game:GetService("GuiService"):GetGuiInset();x=x+inset.X;y=y+inset.Y
+                end
+                local vim=game:GetService("VirtualInputManager")
+                vim:SendMouseMoveEvent(x,y,game)
+                vim:SendMouseButtonEvent(x,y,0,true,game,0)
+                task.wait(.02)
+                vim:SendMouseButtonEvent(x,y,0,false,game,0)
+            end
+        end
+        if not pause(g,.05) then return false end
+    until os.clock()-started>=6
+    stop("Final dialogue did not finish/close",g);return false
 end
 local function ensureDialogue(g)
     if not dismissFinalDialogue(g) then return false end
@@ -213,7 +200,6 @@ local function ensureDialogue(g)
         local deadline=os.clock()+4
         repeat
             if button("give me a new riddle") or button("what's my riddle?") then return true end
-            skipDialogue(g)
             if not pause(g,.04) then return false end
         until os.clock()>=deadline
     end
@@ -294,7 +280,6 @@ local function waitAfterReroll(g)
         local label=frame and frame:FindFirstChild("TextLabel")
         if label and norm(label.Text):find("can you solve this one",1,true) then return true end
         if button("what's my riddle?") then return true end
-        skipDialogue(g)
         if not pause(g,.04) then return false end
     until os.clock()>=deadline
     stop("Riddle response timed out",g);return false
