@@ -494,20 +494,87 @@ flashTab:Toggle({Name="Auto Camera Timings",Default=false,Callback=function(on)
 end})
 
 local kokuTab=tab
-
 local kokuOn=false
-
-local koku={gui=nil,positions={},moved=false,stable=0,fired=false}
+local koku
+local function resetKoku(gui)
+    koku={gui=gui,positions={},moved=false,stable=0,fired=false,lastMotion=0}
+end
+resetKoku(nil)
 kokuTab:Toggle({Name="Auto Kokushibo",Default=false,Callback=function(on)
-    kokuOn=on;koku={gui=nil,positions={},moved=false,stable=0,fired=false}
-    
+    kokuOn=on;resetKoku(nil)
 end})
-local function localX(obj)
-    local ok,x=pcall(function()return obj.Position.X.Scale end)
-    if ok and type(x)=="number" then return x end
-    if positionOffset and type(memory_read)=="function" then
-        local success,value=pcall(function()return memory_read("float",obj.Address+positionOffset)end)
-        if success and type(value)=="number" and value==value then return value end
+local function kokuPosition(obj)
+    local ok,value=pcall(function()
+        if not obj:IsA("GuiObject") then return end
+        local p=obj.Position
+        return {p.X.Scale,p.X.Offset,p.Y.Scale,p.Y.Offset}
+    end)
+    if ok then return value end
+end
+local function kokuVisible(gui,pg)
+    local current=gui
+    while current and current~=pg do
+        if current:IsA("GuiObject") and not current.Visible then return false end
+        if current:IsA("ScreenGui") and not current.Enabled then return false end
+        current=current.Parent
+    end
+    return current==pg
+end
+local function kokuRightClick()
+    if type(mouse2click)=="function" then mouse2click();return end
+    if type(mouse2press)=="function" and type(mouse2release)=="function" then
+        local ok,err=pcall(mouse2press)
+        local released,releaseErr=pcall(mouse2release)
+        if not ok then error(err) end
+        if not released then error(releaseErr) end
+        return
+    end
+    local vim=game:GetService("VirtualInputManager")
+    local point=game:GetService("UserInputService"):GetMouseLocation()
+    local ok,err=pcall(function()vim:SendMouseButtonEvent(point.X,point.Y,1,true,game,0)end)
+    local released,releaseErr=pcall(function()vim:SendMouseButtonEvent(point.X,point.Y,1,false,game,0)end)
+    if not ok then error(err) end
+    if not released then error(releaseErr) end
+end
+local function updateKokushibo()
+    if not alive or not kokuOn then return end
+    local player=players.LocalPlayer
+    local pg=player and player:FindFirstChild("PlayerGui")
+    local gui=koku.gui
+    if not gui or not pg or not gui:IsDescendantOf(pg) then
+        gui=pg and pg:FindFirstChild("FrenchKokushibo",true)
+    end
+    if not gui or not kokuVisible(gui,pg) then resetKoku(nil);return end
+    if gui~=koku.gui then resetKoku(gui) end
+    local now=tick and tick() or os.clock()
+    local positions={}
+    local changed,count=false,0
+    for _,eye in ipairs(gui:GetDescendants())do
+        local p=kokuPosition(eye)
+        if p then
+            positions[eye]=p;count=count+1
+            local old=koku.positions[eye]
+            if old then
+                for i=1,4 do
+                    if math.abs(p[i]-old[i])>.000001 then changed=true;break end
+                end
+            elseif next(koku.positions)~=nil then changed=true end
+        end
+    end
+    for eye in pairs(koku.positions)do
+        if not positions[eye] then changed=true end
+    end
+    koku.positions=positions
+    if count==0 then return end
+    if changed then
+        koku.moved=true;koku.stable=0;koku.fired=false;koku.lastMotion=now
+    elseif koku.moved and not koku.fired then
+        koku.stable=koku.stable+1
+    end
+    if koku.moved and not koku.fired and koku.stable>=2 and now-koku.lastMotion>=1/120 then
+        -- Mark first so a failed input API cannot spam every frame.
+        koku.fired=true
+        kokuRightClick()
     end
 end
 local function updateOtherTimings()
@@ -537,35 +604,6 @@ local function updateOtherTimings()
             end
             if fov>=65 then flash={last=fov,minimum=fov,descending=false,fired=false}
             else flash.minimum=math.min(flash.minimum,fov);flash.last=fov end
-        end
-    end
-    if kokuOn then
-        local player=players.LocalPlayer
-        local pg=player and player:FindFirstChild("PlayerGui")
-        local gui=pg and pg:FindFirstChild("FrenchKokushibo")
-        if not gui then koku={gui=nil,positions={},moved=false,stable=0,fired=false};return end
-        local key=gui.Address or gui
-        if key~=koku.gui then koku={gui=key,positions={},moved=false,stable=0,fired=false} end
-        if koku.fired then return end
-        local changed=false
-        local count=0
-        for _,eye in ipairs(gui:GetChildren())do
-            local x=localX(eye)
-            if x then
-                count=count+1
-                local id=eye.Address or eye
-                local previousX=koku.positions[id]
-                if previousX and math.abs(x-previousX)>.000001 then changed=true end
-                koku.positions[id]=x
-            end
-        end
-        if count==0 then return end
-        if changed then koku.moved=true;koku.stable=0
-        elseif koku.moved then koku.stable=koku.stable+1 end
-        if koku.stable>=2 then
-            if type(mouse2click)=="function" then
-                mouse2click();koku.fired=true
-            end
         end
     end
 end
@@ -1070,6 +1108,10 @@ macroCleanup=function()
 end
 
 connection=game:GetService("RunService").Heartbeat:Connect(function()
+    local kokuOK,kokuErr=pcall(updateKokushibo)
+    if not kokuOK and tostring(kokuErr)~=lastError then
+        lastError=tostring(kokuErr);print("[Kokushibo Timing] "..lastError)
+    end
     pcall(updateMacroNotice)
     if updateInstaTimings then pcall(updateInstaTimings) end
     if not alive then return end
