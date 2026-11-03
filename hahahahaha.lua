@@ -259,9 +259,11 @@ source = replaceMenu(
 source = [[
 local UIS = game:GetService("UserInputService")
 
-local isrbxactive = function()
-    return true
-end
+local menuFocused=true
+local menuFocusConnections={}
+menuFocusConnections[#menuFocusConnections+1]=UIS.WindowFocused:Connect(function()menuFocused=true end)
+menuFocusConnections[#menuFocusConnections+1]=UIS.WindowFocusReleased:Connect(function()menuFocused=false end)
+local isrbxactive = function() return menuFocused end
 
 local ismouse1pressed = function()
     return UIS:IsMouseButtonPressed(
@@ -317,6 +319,7 @@ end
 
 source=source:gsub("local KEY_NAME = {}", 'VK.MButton=0x04\nKEY_LABEL[0x04]="Middle Mouse"\nlocal KEY_NAME = {}',1)
 
+source=source:gsub("alive = false\n", "alive = false\n        for _,event in ipairs(menuFocusConnections)do pcall(function()event:Disconnect()end)end\n",1)
 local menuChunk, menuError = loadstring(source)
 assert(menuChunk, menuError)
 local library = menuChunk()
@@ -401,9 +404,38 @@ if type(memory_read) == "function" then
     if type(value)=="string" then value=tonumber(value) end
     if type(value)=="number" and value>0 and value<8192 and value%4==0 then positionOffset=value end
 end
+-- Timing input adapters also work outside Nova's separately loaded menu.
+local timingUIS=game:GetService("UserInputService")
+local timingNativeKey=iskeypressed
+local timingNativeClick=mouse1click
+local timingVIM
+pcall(function()timingVIM=game:GetService("VirtualInputManager")end)
+local iskeypressed=function(vk)
+    if type(timingNativeKey)=="function" then
+        local ok,down=pcall(timingNativeKey,vk)
+        if ok then return down==true end
+    end
+    local names={[0x31]="One",[0x32]="Two",[0x33]="Three",[0x34]="Four"}
+    local name=names[vk]
+    return name and timingUIS:IsKeyDown(Enum.KeyCode[name]) or false
+end
+local mouse1click=function()
+    if type(timingNativeClick)=="function" then return timingNativeClick() end
+    assert(timingVIM,"Left-click simulation is unavailable in this runner")
+    local point=timingUIS:GetMouseLocation()
+    local ok,err=pcall(function()timingVIM:SendMouseButtonEvent(point.X,point.Y,0,true,game,0)end)
+    local released,releaseErr=pcall(function()timingVIM:SendMouseButtonEvent(point.X,point.Y,0,false,game,0)end)
+    if not ok then error(err) end
+    if not released then error(releaseErr) end
+end
 local function readRatio(bar,cutter)
     local ok,value=pcall(function()return cutter.Position.X.Scale end)
-    if ok and type(value)=="number" and value>=0 and value<=1 then return value,"local" end
+    if ok and type(value)=="number" and value==value then
+        local width=bar.AbsoluteSize.X
+        local offset=cutter.Position.X.Offset
+        if width>0 and type(offset)=="number" then value=value+offset/width end
+        if value>=0 and value<=1 then return value,"local" end
+    end
     if positionOffset and type(memory_read)=="function" then
         local success,scale=pcall(function()return memory_read("float",cutter.Address+positionOffset) end)
         if success and type(scale)=="number" and scale==scale and scale>=0 and scale<=1 then return scale,"cursor" end
@@ -588,7 +620,11 @@ local function updateOtherTimings()
         elseif type(fov)=="number" then
             if flash.last then
                 local delta=fov-flash.last
-                if delta<-.05 then flash.descending=true end
+                if delta<-.05 then
+                    -- A new inward zoom starts a fresh round, regardless of base FOV.
+                    if flash.fired then flash.fired=false;flash.minimum=fov end
+                    flash.descending=true
+                end
                 flash.minimum=math.min(flash.minimum,fov)
                 -- Reference MYABA uses a downward-FOV latch followed by any upward edge.
                 local endpoint=delta>.0001
@@ -602,8 +638,7 @@ local function updateOtherTimings()
                     end
                 end
             end
-            if fov>=65 then flash={last=fov,minimum=fov,descending=false,fired=false}
-            else flash.minimum=math.min(flash.minimum,fov);flash.last=fov end
+            flash.minimum=math.min(flash.minimum,fov);flash.last=fov
         end
     end
 end
@@ -663,9 +698,12 @@ local function update()
             if ratio == ratio and ratio >= -.1 and ratio <= 1.1 then
                 -- A reused GUI can contain multiple timing rounds within one move.
                 if prompt.last and prompt.last >= .65 and ratio < .3 then prompt.fired=false end
+                local previousRatio=prompt.last
                 prompt.last=ratio
                 if not prompt.fired then
-                    if math.abs(ratio-.7) < .018 and not sent then
+                    local inWindow=math.abs(ratio-.7)<.018
+                    local crossed=previousRatio and previousRatio<.682 and ratio>=.682 and ratio<=.82
+                    if (inWindow or crossed) and not sent then
                         mouse1click(); prompt.fired=true; sent=true
                         lastNanamiClick=tick and tick() or os.clock()
                         print("[Nanami Timing v3] Click at "..tostring(ratio).." via "..method)
@@ -811,6 +849,7 @@ local aizenToggle,gojoToggle,dioToggle
 local dioOn=false
 local macroBusy=false
 local macroHeldKeys={}
+local macroMouseHeld=false
 local macroError
 local macroBindings={
     {trigger=0x45,first=0x32,second=0x31,delay=.020},
@@ -1076,16 +1115,16 @@ local function runDioMacro()
         local function active() return alive and macrosOn and dioOn and macroFocused() end
         local ok,err=pcall(function()
             if not active() then return end
-            mouseHeld=true;macroSendMouse(true)
+            mouseHeld=true;macroMouseHeld=true;macroSendMouse(true)
             task.wait(.230)
             if not active() then return end
-            spaceHeld=true;macroSendKey(0x20,true)
+            spaceHeld=true;macroHeldKeys[0x20]=true;macroSendKey(0x20,true)
             task.wait(.210)
             if not active() then return end
             macroTap(0x33)
         end)
-        if spaceHeld then pcall(macroSendKey,0x20,false) end
-        if mouseHeld then pcall(macroSendMouse,false) end
+        if spaceHeld then pcall(macroSendKey,0x20,false);macroHeldKeys[0x20]=nil end
+        if mouseHeld then pcall(macroSendMouse,false);macroMouseHeld=false end
         for vk in pairs(macroHeldKeys)do
             pcall(macroSendKey,vk,false);macroHeldKeys[vk]=nil
         end
@@ -1103,26 +1142,28 @@ dioOn=dioToggle.Value==true
 
 
 macroCleanup=function()
+    if macroMouseHeld then pcall(macroSendMouse,false);macroMouseHeld=false end
     for _,event in ipairs(macroFocusConnections)do pcall(function()event:Disconnect()end) end
     for vk in pairs(macroHeldKeys)do pcall(macroSendKey,vk,false);macroHeldKeys[vk]=nil end
 end
 
-connection=game:GetService("RunService").Heartbeat:Connect(function()
-    local kokuOK,kokuErr=pcall(updateKokushibo)
-    if not kokuOK and tostring(kokuErr)~=lastError then
-        lastError=tostring(kokuErr);print("[Kokushibo Timing] "..lastError)
-    end
-    pcall(updateMacroNotice)
-    if updateInstaTimings then pcall(updateInstaTimings) end
-    if not alive then return end
-    local ok,err=pcall(update)
+local subsystemErrors={}
+local function runSubsystem(name,fn)
+    local ok,err=pcall(fn)
     if not ok then
-        message("Tracking unavailable; see Matcha output.")
-        if tostring(err) ~= lastError then lastError=tostring(err); print("[Nanami Timing] "..lastError) end
-    end
-    local otherOK,otherError=pcall(updateOtherTimings)
-    if not otherOK and tostring(otherError)~=lastError then
-        lastError=tostring(otherError);print("[ABA Timings] "..lastError)
-    end
+        local text=tostring(err)
+        if subsystemErrors[name]~=text then
+            subsystemErrors[name]=text
+            print("["..name.."] "..text)
+        end
+    else subsystemErrors[name]=nil end
+end
+connection=game:GetService("RunService").Heartbeat:Connect(function()
+    if not alive then return end
+    runSubsystem("Kokushibo Timing",updateKokushibo)
+    runSubsystem("Macro Notification",updateMacroNotice)
+    if updateInstaTimings then runSubsystem("Insta Timing",updateInstaTimings) end
+    runSubsystem("Nanami Timing",update)
+    runSubsystem("Camera Timing",updateOtherTimings)
 end)
-print("[hahahahahaha] Loaded. Open Timings for all nine toggles. Right Shift shows/hides the menu.")
+print("[hahahahahaha] Loaded. Timings and Macros are ready. Right Shift shows/hides the menu.")
