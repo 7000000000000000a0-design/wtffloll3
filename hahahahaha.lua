@@ -110,6 +110,153 @@ scriptSource = scriptSource:gsub(
     "local id=eye"
 )
 
+-- Add the attached timing checks to this loader's existing menu.
+local instaTimingModule = [====[
+-- Timing callbacks adapted from ahmed abditori.txt.
+local updateInstaTimings
+do
+    local instaTab=window:Tab("Insta Timing")
+    local instaOn=false
+    local rs=game:GetService("ReplicatedStorage")
+    local targets={"BlackFlashCheck","NanamiCheck","OsuCheck","KokushiboCheck","ChrolloCheck","ChrolloCheck2"}
+    local entries={}
+    local lastFired=-math.huge
+    local nextScan=0
+    local status=instaTab:Label({Text="Insta Timing: OFF"})
+    local function fireM1()
+        local now=tick and tick() or os.clock()
+        if now-lastFired<.5 then return end
+        lastFired=now
+        local player=players.LocalPlayer
+        local char=player and player.Character
+        local root=char and char:FindFirstChild("HumanoidRootPart")
+        local humanoid=char and char:FindFirstChildWhichIsA("Humanoid")
+        if not root or not humanoid or humanoid.Health<=0 then return end
+        if char:FindFirstChild("Stun") or char:FindFirstChild("Ragdolled") or char:FindFirstChild("Knocked") then return end
+        local backpack=player:FindFirstChild("Backpack")
+        local input=backpack and backpack:FindFirstChild("Input")
+        if not input then return end
+        local jitter=Vector3.new((math.random()-.5)*4,(math.random()-.5)*2,(math.random()-.5)*4)
+        local dodgeVelo
+        if math.random()<.15 then
+            dodgeVelo=Vector3.new(math.random()*2-1,0,math.random()*2-1)*math.random()
+        end
+        input:FireServer("M1",{
+            air=false,mousehit=root.CFrame*CFrame.new(jitter),md=Vector3.zero,
+            dodgevelo=dodgeVelo,skeydown=false,skeyreal=false,
+        })
+    end
+    local wrap=newcclosure or function(fn)return fn end
+    local function restore(entry)
+        if entry.mode=="hook" then
+            return pcall(hookfunction,entry.target,entry.original)
+        end
+        return pcall(function()
+            local ok,current=pcall(function()return entry.remote.OnClientInvoke end)
+            if not ok or current==entry.callback then
+                entry.remote.OnClientInvoke=entry.original
+            end
+        end)
+    end
+    instaCleanup=function()
+        instaOn=false
+        for remote,entry in pairs(entries)do
+            local ok,err=restore(entry)
+            if ok then entries[remote]=nil
+            else print("[Insta Timing] Restore failed: "..tostring(err)) end
+        end
+    end
+    local function install(remote,current,readable)
+        local entry={remote=remote,original=readable and current or nil}
+        entry.callback=wrap(function(...)
+            if not alive or not instaOn then
+                if type(entry.original)=="function" then return entry.original(...) end
+                return
+            end
+            local ok,err=pcall(fireM1)
+            if not ok then print("[Insta Timing] "..tostring(err)) end
+            return true,false
+        end)
+        if readable and type(current)=="function" then
+            if type(hookfunction)~="function" then
+                return nil,"This runner has no hookfunction API"
+            end
+            entry.mode="hook";entry.target=current
+            local ok,original=pcall(hookfunction,current,entry.callback)
+            if not ok then return nil,tostring(original) end
+            if type(original)~="function" then
+                return nil,"hookfunction did not return the original callback"
+            end
+            entry.original=original
+        else
+            entry.mode="property"
+            local ok,err=pcall(function()remote.OnClientInvoke=entry.callback end)
+            if not ok then return nil,tostring(err) end
+        end
+        return entry
+    end
+    updateInstaTimings=function()
+        if not alive or not instaOn then return end
+        local now=tick and tick() or os.clock()
+        if now<nextScan then return end
+        nextScan=now+20+math.random()*20
+        for remote,entry in pairs(entries)do
+            if remote.Parent~=rs then
+                local restored=restore(entry)
+                if restored then entries[remote]=nil end
+            end
+        end
+        local count,errors=0,{}
+        for _,name in ipairs(targets)do
+            local remote=rs:FindFirstChild(name)
+            if remote and remote.ClassName=="RemoteFunction" then
+                local readable,current=pcall(function()return remote.OnClientInvoke end)
+                local entry=entries[remote]
+                local expected=entry and (entry.mode=="hook" and entry.target or entry.callback)
+                if entry and readable and current~=expected then
+                    local restored,err=restore(entry)
+                    if restored then entries[remote]=nil;entry=nil
+                    else errors[#errors+1]=name..": "..tostring(err) end
+                end
+                if not entry then
+                    local installed,err=install(remote,current,readable)
+                    if installed then entries[remote]=installed;entry=installed
+                    else errors[#errors+1]=name..": "..tostring(err) end
+                end
+                if entry then count=count+1 end
+            end
+        end
+        status:SetText("Active checks: "..tostring(count).."/6"..(#errors>0 and " | "..errors[1] or ""))
+        for _,err in ipairs(errors)do print("[Insta Timing] "..err) end
+    end
+    instaTab:Toggle({Name="Enable Insta Timing",Default=false,Callback=function(on)
+        if not on then
+            instaCleanup();status:SetText("Insta Timing: OFF")
+            return
+        end
+        instaOn=true;nextScan=0
+        local ok,err=pcall(updateInstaTimings)
+        if not ok then status:SetText("Insta Timing unavailable");print("[Insta Timing] "..tostring(err)) end
+    end})
+end
+
+]====]
+scriptSource = replace(
+    scriptSource,
+    "local connection, lastStatus, lastError",
+    "local connection, lastStatus, lastError\nlocal instaCleanup"
+)
+scriptSource = replace(
+    scriptSource,
+    "    alive=false; enabled=false",
+    "    alive=false; enabled=false\n    if instaCleanup then pcall(instaCleanup) end"
+)
+scriptSource = replace(
+    scriptSource,
+    'connection=game:GetService("RunService").Heartbeat:Connect(function()',
+    instaTimingModule .. 'connection=game:GetService("RunService").Heartbeat:Connect(function()\n    if updateInstaTimings then pcall(updateInstaTimings) end'
+)
+
 local run, err = loadstring(scriptSource)
 assert(run, err)
 run()
