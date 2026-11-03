@@ -725,12 +725,48 @@ do
     local instaTab=tab
     local instaOn=false
     local rs=game:GetService("ReplicatedStorage")
-    local targets={"BlackFlashCheck","NanamiCheck","OsuCheck","KokushiboCheck","ChrolloCheck","ChrolloCheck2"}
+    local targets={"BlackFlashCheck"}
     local entries={}
     local lastFired=-math.huge
     local nextScan=0
     local status=instaTab:Label({Text="Insta Timing: OFF"})
     status:SetVisible(false)
+    local function isYuji()
+        local player=players.LocalPlayer
+        local character=player and player.Character
+        if not player or not character then return false end
+        local function matches(value)
+            if type(value)~="string" then return false end
+            local name=value:lower():gsub("[^%w]","")
+            return name:find("yuji",1,true)~=nil or name:find("itadori",1,true)~=nil
+        end
+        if matches(character.Name) then return true end
+        local roots={player,character,player:FindFirstChild("ReplicatedStats")}
+        for i=1,3 do
+            local root=roots[i]
+            if root then
+                local ok,attributes=pcall(function()return root:GetAttributes()end)
+                if ok and type(attributes)=="table" then
+                    for key,value in pairs(attributes)do
+                        local field=tostring(key):lower()
+                        if (field:find("char",1,true) or field:find("fighter",1,true) or field:find("selected",1,true))
+                            and matches(value) then return true end
+                    end
+                end
+                local ok,children=pcall(function()return root:GetDescendants()end)
+                if ok then
+                    for _,object in ipairs(children)do
+                        local field=tostring(object.Name):lower()
+                        if field:find("char",1,true) or field:find("fighter",1,true) or field:find("selected",1,true) then
+                            local readable,value=pcall(function()return object.Value end)
+                            if readable and matches(value) then return true end
+                        end
+                    end
+                end
+            end
+        end
+        return false
+    end
     local function fireM1()
         local now=tick and tick() or os.clock()
         if now-lastFired<.5 then return end
@@ -777,7 +813,7 @@ do
         entry.callback=wrap(function(...)
             -- Capture the state at invocation: an in-progress check completes
             -- consistently even if the switch changes while it is running.
-            local automatic=alive and instaOn and entry.active
+            local automatic=alive and instaOn and entry.active and isYuji()
             if not automatic then return entry.original(...) end
             local ok,err=pcall(fireM1)
             if not ok then print("[Insta Timing] "..tostring(err)) end
@@ -825,10 +861,10 @@ do
                 if entry then entry.active=true;count=count+1 end
             end
         end
-        status:SetText("Active checks: "..tostring(count).."/6"..(#errors>0 and " | "..errors[1] or ""))
+        status:SetText("Active checks: "..tostring(count).."/1"..(#errors>0 and " | "..errors[1] or ""))
         for _,err in ipairs(errors)do print("[Insta Timing] "..err) end
     end
-    instaTab:Toggle({Name="Insta Timing (for fun)",Default=false,Callback=function(on)
+    instaTab:Toggle({Name="Insta Black Flash - Yuji (for fun)",Default=false,Callback=function(on)
         if not on then
             instaCleanup();status:SetText("Insta Timing: OFF")
             return
