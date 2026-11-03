@@ -264,6 +264,7 @@ local enabled, alive, clicked = false, true, false
 local lastNanamiClick=-math.huge
 local prompts = {}
 local connection, lastStatus, lastError
+local instaCleanup
 
 local function message(text)
     if text ~= lastStatus then lastStatus=text;  end
@@ -278,6 +279,7 @@ state = {}
 function state.Destroy()
     if not alive then return end
     alive=false; enabled=false
+    if instaCleanup then pcall(instaCleanup) end
     if connection then pcall(function()connection:Disconnect()end);connection=nil end
     pcall(function()window:Toggle(false)end)
     pcall(function()window:Destroy()end)
@@ -821,7 +823,100 @@ aizenOn=aizenToggle.Value==true
 gojoOn=gojoToggle.Value==true
 dioOn=dioToggle.Value==true
 
+
+-- Timing callbacks adapted from ahmed abditori.txt.
+local updateInstaTimings
+do
+    local instaTab=window:Tab("Insta Timing")
+    local instaOn=false
+    local rs=game:GetService("ReplicatedStorage")
+    local targets={"BlackFlashCheck","NanamiCheck","OsuCheck","KokushiboCheck","ChrolloCheck","ChrolloCheck2"}
+    local entries={}
+    local lastFired=-math.huge
+    local nextScan=0
+    local status=instaTab:Label({Text="Insta Timing: OFF"})
+    local function fireM1()
+        local now=tick and tick() or os.clock()
+        if now-lastFired<.5 then return end
+        local player=players.LocalPlayer
+        local char=player and player.Character
+        local root=char and char:FindFirstChild("HumanoidRootPart")
+        local humanoid=char and char:FindFirstChildWhichIsA("Humanoid")
+        if not root or not humanoid or humanoid.Health<=0 then return end
+        if char:FindFirstChild("Stun") or char:FindFirstChild("Ragdolled") or char:FindFirstChild("Knocked") then return end
+        local backpack=player:FindFirstChild("Backpack")
+        local input=backpack and backpack:FindFirstChild("Input")
+        if not input then return end
+        lastFired=now
+        local jitter=Vector3.new((math.random()-.5)*4,(math.random()-.5)*2,(math.random()-.5)*4)
+        local dodgeVelo
+        if math.random()<.15 then
+            dodgeVelo=Vector3.new(math.random()*2-1,0,math.random()*2-1)*math.random()
+        end
+        input:FireServer("M1",{
+            air=false,mousehit=root.CFrame*CFrame.new(jitter),md=Vector3.zero,
+            dodgevelo=dodgeVelo,skeydown=false,skeyreal=false,
+        })
+    end
+    local function restore(entry)
+        pcall(function()
+            if entry.remote.OnClientInvoke==entry.callback then
+                entry.remote.OnClientInvoke=entry.original
+            end
+        end)
+    end
+    instaCleanup=function()
+        instaOn=false
+        for remote,entry in pairs(entries)do restore(entry);entries[remote]=nil end
+    end
+    updateInstaTimings=function()
+        if not alive or not instaOn then return end
+        local now=tick and tick() or os.clock()
+        if now<nextScan then return end
+        nextScan=now+2
+        for remote,entry in pairs(entries)do
+            if remote.Parent~=rs then restore(entry);entries[remote]=nil end
+        end
+        local count,unavailable=0,0
+        for _,name in ipairs(targets)do
+            local remote=rs:FindFirstChild(name)
+            if remote and remote.ClassName=="RemoteFunction" then
+                local ok,current=pcall(function()return remote.OnClientInvoke end)
+                if ok then
+                    local entry=entries[remote]
+                    if not entry or current~=entry.callback then
+                        entry={remote=remote,original=current}
+                        entry.callback=function(...)
+                            if not alive or not instaOn then
+                                if type(entry.original)=="function" then return entry.original(...) end
+                                return
+                            end
+                            local fired,err=pcall(fireM1)
+                            if not fired then print("[Insta Timing] "..tostring(err)) end
+                            return true,false
+                        end
+                        local assigned=pcall(function()remote.OnClientInvoke=entry.callback end)
+                        if assigned then entries[remote]=entry else entries[remote]=nil;unavailable=unavailable+1 end
+                    end
+                    if entries[remote] then count=count+1 end
+                else unavailable=unavailable+1 end
+            end
+        end
+        status:SetText("Active checks: "..tostring(count).."/6"..(unavailable>0 and " | Callback access unavailable" or ""))
+    end
+    instaTab:Toggle({Name="Enable Insta Timing",Default=false,Callback=function(on)
+        if not on then
+            instaCleanup();status:SetText("Insta Timing: OFF")
+            return
+        end
+        instaOn=true;nextScan=0
+        local ok,err=pcall(updateInstaTimings)
+        if not ok then status:SetText("Insta Timing unavailable");print("[Insta Timing] "..tostring(err)) end
+    end})
+end
+
 connection=game:GetService("RunService").Heartbeat:Connect(function()
+    if updateInstaTimings then pcall(updateInstaTimings) end
     pcall(updateMacroNotice)
     if not alive then return end
     local ok,err=pcall(update)
