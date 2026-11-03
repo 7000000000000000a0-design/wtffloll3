@@ -838,6 +838,7 @@ do
     local function fireM1()
         local now=tick and tick() or os.clock()
         if now-lastFired<.5 then return end
+        lastFired=now
         local player=players.LocalPlayer
         local char=player and player.Character
         local root=char and char:FindFirstChild("HumanoidRootPart")
@@ -847,7 +848,6 @@ do
         local backpack=player:FindFirstChild("Backpack")
         local input=backpack and backpack:FindFirstChild("Input")
         if not input then return end
-        lastFired=now
         local jitter=Vector3.new((math.random()-.5)*4,(math.random()-.5)*2,(math.random()-.5)*4)
         local dodgeVelo
         if math.random()<.15 then
@@ -858,51 +858,88 @@ do
             dodgevelo=dodgeVelo,skeydown=false,skeyreal=false,
         })
     end
+    local wrap=newcclosure or function(fn)return fn end
     local function restore(entry)
-        pcall(function()
-            if entry.remote.OnClientInvoke==entry.callback then
+        if entry.mode=="hook" then
+            return pcall(hookfunction,entry.target,entry.original)
+        end
+        return pcall(function()
+            local ok,current=pcall(function()return entry.remote.OnClientInvoke end)
+            if not ok or current==entry.callback then
                 entry.remote.OnClientInvoke=entry.original
             end
         end)
     end
     instaCleanup=function()
         instaOn=false
-        for remote,entry in pairs(entries)do restore(entry);entries[remote]=nil end
+        for remote,entry in pairs(entries)do
+            local ok,err=restore(entry)
+            if ok then entries[remote]=nil
+            else print("[Insta Timing] Restore failed: "..tostring(err)) end
+        end
+    end
+    local function install(remote,current,readable)
+        local entry={remote=remote,original=readable and current or nil}
+        entry.callback=wrap(function(...)
+            if not alive or not instaOn then
+                if type(entry.original)=="function" then return entry.original(...) end
+                return
+            end
+            local ok,err=pcall(fireM1)
+            if not ok then print("[Insta Timing] "..tostring(err)) end
+            return true,false
+        end)
+        if readable and type(current)=="function" then
+            if type(hookfunction)~="function" then
+                return nil,"This runner has no hookfunction API"
+            end
+            entry.mode="hook";entry.target=current
+            local ok,original=pcall(hookfunction,current,entry.callback)
+            if not ok then return nil,tostring(original) end
+            if type(original)~="function" then
+                return nil,"hookfunction did not return the original callback"
+            end
+            entry.original=original
+        else
+            entry.mode="property"
+            local ok,err=pcall(function()remote.OnClientInvoke=entry.callback end)
+            if not ok then return nil,tostring(err) end
+        end
+        return entry
     end
     updateInstaTimings=function()
         if not alive or not instaOn then return end
         local now=tick and tick() or os.clock()
         if now<nextScan then return end
-        nextScan=now+2
+        nextScan=now+20+math.random()*20
         for remote,entry in pairs(entries)do
-            if remote.Parent~=rs then restore(entry);entries[remote]=nil end
+            if remote.Parent~=rs then
+                local restored=restore(entry)
+                if restored then entries[remote]=nil end
+            end
         end
-        local count,unavailable=0,0
+        local count,errors=0,{}
         for _,name in ipairs(targets)do
             local remote=rs:FindFirstChild(name)
             if remote and remote.ClassName=="RemoteFunction" then
-                local ok,current=pcall(function()return remote.OnClientInvoke end)
-                if ok then
-                    local entry=entries[remote]
-                    if not entry or current~=entry.callback then
-                        entry={remote=remote,original=current}
-                        entry.callback=function(...)
-                            if not alive or not instaOn then
-                                if type(entry.original)=="function" then return entry.original(...) end
-                                return
-                            end
-                            local fired,err=pcall(fireM1)
-                            if not fired then print("[Insta Timing] "..tostring(err)) end
-                            return true,false
-                        end
-                        local assigned=pcall(function()remote.OnClientInvoke=entry.callback end)
-                        if assigned then entries[remote]=entry else entries[remote]=nil;unavailable=unavailable+1 end
-                    end
-                    if entries[remote] then count=count+1 end
-                else unavailable=unavailable+1 end
+                local readable,current=pcall(function()return remote.OnClientInvoke end)
+                local entry=entries[remote]
+                local expected=entry and (entry.mode=="hook" and entry.target or entry.callback)
+                if entry and readable and current~=expected then
+                    local restored,err=restore(entry)
+                    if restored then entries[remote]=nil;entry=nil
+                    else errors[#errors+1]=name..": "..tostring(err) end
+                end
+                if not entry then
+                    local installed,err=install(remote,current,readable)
+                    if installed then entries[remote]=installed;entry=installed
+                    else errors[#errors+1]=name..": "..tostring(err) end
+                end
+                if entry then count=count+1 end
             end
         end
-        status:SetText("Active checks: "..tostring(count).."/6"..(unavailable>0 and " | Callback access unavailable" or ""))
+        status:SetText("Active checks: "..tostring(count).."/6"..(#errors>0 and " | "..errors[1] or ""))
+        for _,err in ipairs(errors)do print("[Insta Timing] "..err) end
     end
     instaTab:Toggle({Name="Enable Insta Timing",Default=false,Callback=function(on)
         if not on then
