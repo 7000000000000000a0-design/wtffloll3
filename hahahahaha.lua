@@ -299,6 +299,8 @@ local iskeypressed = function(vk)
         )
     end
 
+    if vk == 4 then return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton3) end
+
     local name = keyNames[vk]
 
     if vk >= 48 and vk <= 57 then
@@ -349,6 +351,7 @@ local lastNanamiClick=-math.huge
 local prompts = {}
 local connection, lastStatus, lastError
 local instaCleanup
+local macroCleanup
 
 local function message(text)
     if text ~= lastStatus then lastStatus=text;  end
@@ -364,6 +367,7 @@ function state.Destroy()
     if not alive then return end
     alive=false; enabled=false
     if instaCleanup then pcall(instaCleanup) end
+    if macroCleanup then pcall(macroCleanup) end
     if connection then pcall(function()connection:Disconnect()end);connection=nil end
     pcall(function()window:Toggle(false)end)
     pcall(function()window:Destroy()end)
@@ -785,14 +789,46 @@ local macroBindings={
     {trigger=0x5A,first=0x33,second=0x31,delay=.040},
     {trigger=0x58,first=0x33,second=0x34,delay=.040},
 }
+-- Shared macro input: use runner APIs when present, otherwise Roblox virtual input.
+local macroUIS=game:GetService("UserInputService")
+local macroVIM
+pcall(function()macroVIM=game:GetService("VirtualInputManager")end)
+local macroWindowFocused=true
+local macroFocusConnections={}
+pcall(function()
+    macroFocusConnections[#macroFocusConnections+1]=macroUIS.WindowFocused:Connect(function()macroWindowFocused=true end)
+    macroFocusConnections[#macroFocusConnections+1]=macroUIS.WindowFocusReleased:Connect(function()macroWindowFocused=false end)
+end)
+local nativeKeypress,nativeKeyrelease=keypress,keyrelease
+local nativeMousepress,nativeMouserelease=mouse1press,mouse1release
+local macroKeyNames={[0x20]="Space",[0x31]="One",[0x32]="Two",[0x33]="Three",[0x34]="Four",[0x51]="Q"}
+local function macroSendKey(vk,down)
+    if type(nativeKeypress)=="function" and type(nativeKeyrelease)=="function" then
+        if down then return nativeKeypress(vk) else return nativeKeyrelease(vk) end
+    end
+    local name=macroKeyNames[vk]
+    assert(macroVIM and name,"Keyboard simulation is unavailable in this runner")
+    macroVIM:SendKeyEvent(down,Enum.KeyCode[name],false,game)
+end
+local function macroSendMouse(down)
+    if type(nativeMousepress)=="function" and type(nativeMouserelease)=="function" then
+        if down then return nativeMousepress() else return nativeMouserelease() end
+    end
+    assert(macroVIM,"Mouse simulation is unavailable in this runner")
+    local point=macroUIS:GetMouseLocation()
+    macroVIM:SendMouseButtonEvent(point.X,point.Y,0,down,game,0)
+end
 local function macroFocused()
-    if type(isrbxactive)~="function" then return false end
-    local ok,active=pcall(isrbxactive)
-    return ok and active==true
+    if not macroWindowFocused then return false end
+    if type(isrbxactive)=="function" then
+        local ok,active=pcall(isrbxactive)
+        if ok and active==false then return false end
+    end
+    local ok,box=pcall(function()return macroUIS:GetFocusedTextBox()end)
+    return not ok or box==nil
 end
 local function macroReady()
-    return type(iskeypressed)=="function" and type(keypress)=="function"
-        and type(keyrelease)=="function" and type(isrbxactive)=="function"
+    return ((type(nativeKeypress)=="function" and type(nativeKeyrelease)=="function") or macroVIM~=nil)
         and task and type(task.spawn)=="function" and type(task.wait)=="function"
 end
 local function macroReport(text)
@@ -884,13 +920,13 @@ macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mod
     local noticeOK,noticeErr=pcall(showMacroNotice,macrosOn)
     if not noticeOK then macroReport(tostring(noticeErr)) end
     if macrosOn and not macroReady() then
-        macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
+        macroReport("Keyboard simulation is unavailable in this runner.")
     end
 end})
 local function macroTap(vk)
     macroHeldKeys[vk]=true
-    keypress(vk)
-    keyrelease(vk)
+    macroSendKey(vk,true)
+    macroSendKey(vk,false)
     macroHeldKeys[vk]=nil
 end
 macrosTab:Section("Aizen Macros")
@@ -908,7 +944,7 @@ end})
 local function runMacro(selected)
     if not alive or not macrosOn or not aizenOn or gojoOn or macroBusy or not macroFocused() then return end
     if not macroReady() then
-        macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
+        macroReport("Keyboard simulation is unavailable in this runner.")
         return
     end
     macroBusy=true
@@ -920,7 +956,7 @@ local function runMacro(selected)
             if alive and macrosOn and aizenOn and not gojoOn and macroFocused() then macroTap(selected.second) end
         end)
         for vk in pairs(macroHeldKeys)do
-            pcall(keyrelease,vk)
+            pcall(macroSendKey,vk,false)
             macroHeldKeys[vk]=nil
         end
         macroBusy=false
@@ -960,7 +996,7 @@ local gojoBindings={
 local function runGojoMacro(selected)
     if not alive or not macrosOn or not gojoOn or macroBusy or not macroFocused() then return end
     if not macroReady() then
-        macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
+        macroReport("Keyboard simulation is unavailable in this runner.")
         return
     end
     macroBusy=true
@@ -973,7 +1009,7 @@ local function runGojoMacro(selected)
             end
         end)
         for vk in pairs(macroHeldKeys)do
-            pcall(keyrelease,vk)
+            pcall(macroSendKey,vk,false)
             macroHeldKeys[vk]=nil
         end
         macroBusy=false
@@ -1001,8 +1037,8 @@ dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Flag="macro_use_
 end})
 local function runDioMacro()
     if not alive or not macrosOn or not dioOn or macroBusy or not macroFocused() then return end
-    if not macroReady() or type(mouse1press)~="function" or type(mouse1release)~="function" then
-        macroReport("DIO requires mouse1press and mouse1release plus the keyboard macro APIs.")
+    if not macroReady() or not ((type(nativeMousepress)=="function" and type(nativeMouserelease)=="function") or macroVIM) then
+        macroReport("DIO needs keyboard and mouse simulation support.")
         return
     end
     macroBusy=true
@@ -1011,18 +1047,18 @@ local function runDioMacro()
         local function active() return alive and macrosOn and dioOn and macroFocused() end
         local ok,err=pcall(function()
             if not active() then return end
-            mouseHeld=true;mouse1press()
+            mouseHeld=true;macroSendMouse(true)
             task.wait(.230)
             if not active() then return end
-            spaceHeld=true;keypress(0x20)
+            spaceHeld=true;macroSendKey(0x20,true)
             task.wait(.210)
             if not active() then return end
             macroTap(0x33)
         end)
-        if spaceHeld then pcall(keyrelease,0x20) end
-        if mouseHeld then pcall(mouse1release) end
+        if spaceHeld then pcall(macroSendKey,0x20,false) end
+        if mouseHeld then pcall(macroSendMouse,false) end
         for vk in pairs(macroHeldKeys)do
-            pcall(keyrelease,vk);macroHeldKeys[vk]=nil
+            pcall(macroSendKey,vk,false);macroHeldKeys[vk]=nil
         end
         macroBusy=false
         if not ok then macroReport(tostring(err)) end
@@ -1036,6 +1072,11 @@ aizenOn=aizenToggle.Value==true
 gojoOn=gojoToggle.Value==true
 dioOn=dioToggle.Value==true
 
+
+macroCleanup=function()
+    for _,event in ipairs(macroFocusConnections)do pcall(function()event:Disconnect()end) end
+    for vk in pairs(macroHeldKeys)do pcall(macroSendKey,vk,false);macroHeldKeys[vk]=nil end
+end
 
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     pcall(updateMacroNotice)
