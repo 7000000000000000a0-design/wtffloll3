@@ -117,7 +117,7 @@ local instaTimingModule = [====[
 -- Timing callbacks adapted from ahmed abditori.txt.
 local updateInstaTimings
 do
-    local instaTab=window:Tab("Insta Timing")
+    local instaTab=tab
     local instaOn=false
     local rs=game:GetService("ReplicatedStorage")
     local targets={"BlackFlashCheck","NanamiCheck","OsuCheck","KokushiboCheck","ChrolloCheck","ChrolloCheck2"}
@@ -125,6 +125,7 @@ do
     local lastFired=-math.huge
     local nextScan=0
     local status=instaTab:Label({Text="Insta Timing: OFF"})
+    status:SetVisible(false)
     local function fireM1()
         local now=tick and tick() or os.clock()
         if now-lastFired<.5 then return end
@@ -231,7 +232,7 @@ do
         status:SetText("Active checks: "..tostring(count).."/6"..(#errors>0 and " | "..errors[1] or ""))
         for _,err in ipairs(errors)do print("[Insta Timing] "..err) end
     end
-    instaTab:Toggle({Name="Enable Insta Timing",Default=false,Callback=function(on)
+    instaTab:Toggle({Name="Insta Timing (for fun)",Default=false,Callback=function(on)
         if not on then
             instaCleanup();status:SetText("Insta Timing: OFF")
             return
@@ -534,6 +535,263 @@ scriptSource = replace(
     'connection=game:GetService("RunService").Heartbeat:Connect(function()',
     macrosModule .. 'connection=game:GetService("RunService").Heartbeat:Connect(function()\n    pcall(updateMacroNotice)'
 )
+
+-- Keep a compact Timings page; GT Goku is part of Auto Camera Timings.
+scriptSource = replace(scriptSource, [====[
+local flash={last=nil,minimum=math.huge,descending=false,fired=false}
+local characterTimings={Yuji=false,Todo=false,["TS Law"]=false,Geto=false,Kaido=false,Yuta=false,Toji=false}
+local characterOverride="Auto"
+local m1Cooldown,quietAfterNanami=.2,.6
+local lastProfileClick=-math.huge
+local detectedCharacter,nextCharacterScan=nil,0
+
+for _,name in ipairs({"Yuji","Todo","TS Law","Geto","Kaido","Yuta","Toji"})do
+    local characterName=name
+    flashTab:Toggle({Name="Auto "..characterName,Default=false,Callback=function(on)
+        characterTimings[characterName]=on
+        flash={last=nil,minimum=math.huge,descending=false,fired=false}
+    end})
+end
+
+
+
+local function characterFrom(value)
+    if type(value)~="string" then return end
+    local text=value:lower():gsub("[%s_%-]","")
+    if text:find("yuji",1,true) or text:find("itadori",1,true) then return "Yuji" end
+    if text:find("todo",1,true) then return "Todo" end
+    if text:find("tslaw",1,true) or text:find("timeskiplaw",1,true) or text=="law" then return "TS Law" end
+    if text:find("geto",1,true) or text:find("suguru",1,true) then return "Geto" end
+    if text:find("kaido",1,true) then return "Kaido" end
+    if text:find("yuta",1,true) or text:find("okkotsu",1,true) then return "Yuta" end
+    if text:find("toji",1,true) or text:find("fushiguro",1,true) then return "Toji" end
+end
+local function enabledCharacterProfile(now)
+    if not (characterTimings.Yuji or characterTimings.Todo or characterTimings["TS Law"] or characterTimings.Geto or characterTimings.Kaido or characterTimings.Yuta or characterTimings.Toji)then return false end
+    if characterOverride~="Auto" then
+        
+        return characterTimings[characterOverride]==true
+    end
+    if now>=nextCharacterScan then
+        nextCharacterScan=now+.5;detectedCharacter=nil
+        local player=players.LocalPlayer
+        local roots={player,player and player.Character,player and player:FindFirstChild("ReplicatedStats")}
+        for i=1,3 do
+            local root=roots[i]
+            if root then
+                local ok,attrs=pcall(function()return root:GetAttributes()end)
+                if ok and type(attrs)=="table" then
+                    for _,v in pairs(attrs)do detectedCharacter=detectedCharacter or characterFrom(v) end
+                end
+                for _,obj in ipairs(root:GetChildren())do
+                    local success,value=pcall(function()return obj.Value end)
+                    if success then detectedCharacter=detectedCharacter or characterFrom(value) end
+                end
+            end
+        end
+    end
+    
+    if detectedCharacter then return characterTimings[detectedCharacter]==true end
+    return true
+end
+]====], [====[
+local flash={last=nil,minimum=math.huge,descending=false,fired=false}
+local cameraTimingsOn=false
+local m1Cooldown,quietAfterNanami=.2,.6
+local lastProfileClick=-math.huge
+
+
+-- GT Goku profiles use the saved camera animation's 60-fps timeline.
+-- Cues reproduce the existing downward-then-upward zoom rule, not verified QTE windows.
+local gtCameraProfiles={
+    ["115027682223739"]={name="SSJ4",frames={40,200,364,507}},
+    ["114729164555197"]={name="FullPower",frames={23,62,103,219}},
+    ["106522529146940"]={name="QuickSSJ4",frames={33,69,223}},
+    ["117772961044160"]={name="Mini4Ku",frames={183,212}},
+    ["75854246118526"]={name="AdultDaima4",frames={169,433}},
+    ["97822073349491"]={name="ExplosiveKame",frames={95,105,850}},
+    ["81873132751170"]={name="SpiritBomb",frames={}},
+    ["101369743951516"]={name="GoldenApe",frames={}}, -- Fixed FOV; suppress generic clicks.
+}
+local gtTrackStates=setmetatable({}, {__mode="k"})
+local function updateGTCamera(cam,now)
+    local found=false
+    local active={}
+    for _,rig in ipairs(cam:GetChildren()) do
+        if rig.Name=="GTKuCam" then
+            local controller=rig:FindFirstChildOfClass("AnimationController")
+            local animator=controller and controller:FindFirstChildOfClass("Animator")
+            local ok,tracks=pcall(function()
+                return animator and animator:GetPlayingAnimationTracks() or controller:GetPlayingAnimationTracks()
+            end)
+            if ok and tracks then
+                for _,track in ipairs(tracks) do
+                    local animation=track.Animation
+                    local id=animation and tostring(animation.AnimationId):match("%d+")
+                    local profile=id and gtCameraProfiles[id]
+                    if profile and track.IsPlaying then
+                        found=true;active[track]=true
+                        local frame=track.TimePosition*60
+                        local entry=gtTrackStates[track]
+                        if not entry or frame<entry.last-1 then
+                            -- Starting midway through a cutscene must not replay old cues.
+                            entry={last=frame,fired={}}
+                            gtTrackStates[track]=entry
+                        else
+                            for index,cue in ipairs(profile.frames) do
+                                if not entry.fired[index] and frame>cue then
+                                    entry.fired[index]=true
+                                    -- Cross the start of the outward zoom once; discard stale cues after a stall.
+                                    if entry.last<=cue and frame-cue<=6
+                                        and now-lastProfileClick>=m1Cooldown
+                                        and now-lastNanamiClick>=quietAfterNanami
+                                        and type(mouse1click)=="function" then
+                                        mouse1click();lastProfileClick=now
+                                        print("[ABA Timings] GT Goku "..profile.name.." zoom click; frame="..tostring(cue))
+                                    end
+                                end
+                            end
+                            entry.last=frame
+                        end
+                    end
+                end
+            end
+        end
+    end
+    for track in pairs(gtTrackStates) do
+        if not active[track] then gtTrackStates[track]=nil end
+    end
+    return found
+end
+
+-- Shared camera detector, including GT Goku animation-specific zoom cues.
+flashTab:Toggle({Name="Auto Camera Timings",Default=false,Callback=function(on)
+    cameraTimingsOn=on
+    gtTrackStates=setmetatable({}, {__mode="k"})
+    flash={last=nil,minimum=math.huge,descending=false,fired=false}
+end})
+
+]====])
+scriptSource = replace(scriptSource, [====[
+local function updateOtherTimings()
+    if not alive then return end
+    local now=tick and tick() or os.clock()
+    local profileEnabled=enabledCharacterProfile(now)
+    if profileEnabled then
+        local cam=world.CurrentCamera
+        local fov=cam and cam.FieldOfView
+        if type(fov)=="number" then
+            if flash.last then
+                local delta=fov-flash.last
+                if delta<-.05 then flash.descending=true end
+                flash.minimum=math.min(flash.minimum,fov)
+                -- Reference MYABA uses a downward-FOV latch followed by any upward edge.
+                local endpoint=delta>.0001
+                if flash.descending and endpoint and not flash.fired then
+                    local ready=now-lastProfileClick>=m1Cooldown and now-lastNanamiClick>=quietAfterNanami
+                    if ready and type(mouse1click)=="function" then
+                        mouse1click();flash.fired=true
+                        lastProfileClick=now
+                        
+                        print("[ABA Timings v8] Black Flash zoom click; FOV="..tostring(fov)..", minimum="..tostring(flash.minimum))
+                    end
+                end
+            end
+            if fov>=65 then flash={last=fov,minimum=fov,descending=false,fired=false}
+            else flash.minimum=math.min(flash.minimum,fov);flash.last=fov end
+        end
+    end
+    if kokuOn then
+        local player=players.LocalPlayer
+        local pg=player and player:FindFirstChild("PlayerGui")
+        local gui=pg and pg:FindFirstChild("FrenchKokushibo")
+        if not gui then koku={gui=nil,positions={},moved=false,stable=0,fired=false};return end
+        local key=gui.Address or gui
+        if key~=koku.gui then koku={gui=key,positions={},moved=false,stable=0,fired=false} end
+        if koku.fired then return end
+        local changed=false
+        local count=0
+        for _,eye in ipairs(gui:GetChildren())do
+            local x=localX(eye)
+            if x then
+                count=count+1
+                local id=eye.Address or eye
+                local previousX=koku.positions[id]
+                if previousX and math.abs(x-previousX)>.000001 then changed=true end
+                koku.positions[id]=x
+            end
+        end
+        if count==0 then return end
+        if changed then koku.moved=true;koku.stable=0
+        elseif koku.moved then koku.stable=koku.stable+1 end
+        if koku.stable>=2 then
+            if type(mouse2click)=="function" then
+                mouse2click();koku.fired=true
+            end
+        end
+    end
+end
+]====], [====[
+local function updateOtherTimings()
+    if not alive then return end
+    local now=tick and tick() or os.clock()
+    if cameraTimingsOn then
+        local cam=world.CurrentCamera
+        local fov=cam and cam.FieldOfView
+        if cam and updateGTCamera(cam,now) then
+            flash={last=nil,minimum=math.huge,descending=false,fired=false}
+        elseif type(fov)=="number" then
+            if flash.last then
+                local delta=fov-flash.last
+                if delta<-.05 then flash.descending=true end
+                flash.minimum=math.min(flash.minimum,fov)
+                -- Reference MYABA uses a downward-FOV latch followed by any upward edge.
+                local endpoint=delta>.0001
+                if flash.descending and endpoint and not flash.fired then
+                    local ready=now-lastProfileClick>=m1Cooldown and now-lastNanamiClick>=quietAfterNanami
+                    if ready and type(mouse1click)=="function" then
+                        mouse1click();flash.fired=true
+                        lastProfileClick=now
+                        
+                        print("[ABA Timings v8] Black Flash zoom click; FOV="..tostring(fov)..", minimum="..tostring(flash.minimum))
+                    end
+                end
+            end
+            if fov>=65 then flash={last=fov,minimum=fov,descending=false,fired=false}
+            else flash.minimum=math.min(flash.minimum,fov);flash.last=fov end
+        end
+    end
+    if kokuOn then
+        local player=players.LocalPlayer
+        local pg=player and player:FindFirstChild("PlayerGui")
+        local gui=pg and pg:FindFirstChild("FrenchKokushibo")
+        if not gui then koku={gui=nil,positions={},moved=false,stable=0,fired=false};return end
+        local key=gui.Address or gui
+        if key~=koku.gui then koku={gui=key,positions={},moved=false,stable=0,fired=false} end
+        if koku.fired then return end
+        local changed=false
+        local count=0
+        for _,eye in ipairs(gui:GetChildren())do
+            local x=localX(eye)
+            if x then
+                count=count+1
+                local id=eye.Address or eye
+                local previousX=koku.positions[id]
+                if previousX and math.abs(x-previousX)>.000001 then changed=true end
+                koku.positions[id]=x
+            end
+        end
+        if count==0 then return end
+        if changed then koku.moved=true;koku.stable=0
+        elseif koku.moved then koku.stable=koku.stable+1 end
+        if koku.stable>=2 then
+            if type(mouse2click)=="function" then
+                mouse2click();koku.fired=true
+            end
+        end
+    end
+end
+]====])
 
 local run, err = loadstring(scriptSource)
 assert(run, err)
