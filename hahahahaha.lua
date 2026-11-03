@@ -679,44 +679,40 @@ do
         })
     end
     local wrap=newcclosure or function(fn)return fn end
-    local function restore(entry)
-        if entry.mode=="hook" then
-            return pcall(hookfunction,entry.target,entry.original)
+    local function readCallback(remote)
+        local ok,value=pcall(function()return remote.OnClientInvoke end)
+        if ok then return true,value end
+        if type(getcallbackvalue)=="function" then
+            return pcall(getcallbackvalue,remote,"OnClientInvoke")
         end
-        return pcall(function()
-            local ok,current=pcall(function()return entry.remote.OnClientInvoke end)
-            if not ok or current==entry.callback then
-                entry.remote.OnClientInvoke=entry.original
-            end
-        end)
+        return false,value
     end
+    -- Keep one stable dispatcher per callback. OFF always calls the saved game
+    -- function; toggling never re-hooks or erases a game's callback.
     instaCleanup=function()
         instaOn=false
-        for remote,entry in pairs(entries)do
-            local ok,err=restore(entry)
-            if ok then entries[remote]=nil
-            else print("[Insta Timing] Restore failed: "..tostring(err)) end
-        end
+        for _,entry in pairs(entries)do entry.active=false end
     end
     local function install(remote,current,readable)
-        local entry={remote=remote,original=readable and current or nil}
+        if not readable or type(current)~="function" then
+            return nil,"Waiting for access to the original game callback"
+        end
+        local entry={remote=remote,original=current,active=true}
         entry.callback=wrap(function(...)
-            if not alive or not instaOn then
-                if type(entry.original)=="function" then return entry.original(...) end
-                return
-            end
+            -- Capture the state at invocation: an in-progress check completes
+            -- consistently even if the switch changes while it is running.
+            local automatic=alive and instaOn and entry.active
+            if not automatic then return entry.original(...) end
             local ok,err=pcall(fireM1)
             if not ok then print("[Insta Timing] "..tostring(err)) end
             return true,false
         end)
-        if readable and type(current)=="function" then
-            if type(hookfunction)~="function" then
-                return nil,"This runner has no hookfunction API"
-            end
+        if type(hookfunction)=="function" then
             entry.mode="hook";entry.target=current
             local ok,original=pcall(hookfunction,current,entry.callback)
             if not ok then return nil,tostring(original) end
             if type(original)~="function" then
+                entry.active=false
                 return nil,"hookfunction did not return the original callback"
             end
             entry.original=original
@@ -731,31 +727,26 @@ do
         if not alive or not instaOn then return end
         local now=tick and tick() or os.clock()
         if now<nextScan then return end
-        nextScan=now+20+math.random()*20
+        nextScan=now+2
         for remote,entry in pairs(entries)do
-            if remote.Parent~=rs then
-                local restored=restore(entry)
-                if restored then entries[remote]=nil end
-            end
+            if remote.Parent~=rs then entry.active=false;entries[remote]=nil end
         end
         local count,errors=0,{}
         for _,name in ipairs(targets)do
             local remote=rs:FindFirstChild(name)
             if remote and remote.ClassName=="RemoteFunction" then
-                local readable,current=pcall(function()return remote.OnClientInvoke end)
+                local readable,current=readCallback(remote)
                 local entry=entries[remote]
                 local expected=entry and (entry.mode=="hook" and entry.target or entry.callback)
                 if entry and readable and current~=expected then
-                    local restored,err=restore(entry)
-                    if restored then entries[remote]=nil;entry=nil
-                    else errors[#errors+1]=name..": "..tostring(err) end
+                    entry.active=false;entries[remote]=nil;entry=nil
                 end
                 if not entry then
                     local installed,err=install(remote,current,readable)
                     if installed then entries[remote]=installed;entry=installed
                     else errors[#errors+1]=name..": "..tostring(err) end
                 end
-                if entry then count=count+1 end
+                if entry then entry.active=true;count=count+1 end
             end
         end
         status:SetText("Active checks: "..tostring(count).."/6"..(#errors>0 and " | "..errors[1] or ""))
