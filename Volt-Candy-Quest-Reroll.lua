@@ -68,12 +68,11 @@ local function quest()
             local root=o.Parent
             for _=1,4 do
                 if not root or root==pg then break end
-                local reward,public,ranked,close
+                local reward,public,close
                 for _,t in ipairs(root:GetDescendants()) do
                     if (t:IsA("TextLabel") or t:IsA("TextButton")) and visible(t) then
                         local text=norm(t.Text)
                         if text:find("win a public match",1,true) then public=true end
-                        if text:find("win a ranked match",1,true) then ranked=true end
                         local n=text:match("reward%s*:%s*(%d+)")
                         if n then reward=tonumber(n) end
                         if t:IsA("TextButton") and (text=="x" or text=="×") then close=t end
@@ -83,7 +82,7 @@ local function quest()
                     close=findQuestClose(root,o) or close
                     -- The red X may be a sibling of the content frame.
                     if not close and root.Parent and root.Parent~=pg then close=findQuestClose(root.Parent,o) end
-                    return {reward=reward,target=(reward==10 and public==true) or ranked==true,ranked=ranked==true,close=close,root=root,title=o}
+                    return {reward=reward,target=reward==10 and public==true,close=close,root=root,title=o}
                 end
                 root=root.Parent
             end
@@ -232,7 +231,7 @@ local function dismissFinalDialogue(g)
         local current=quest()
         if current and current.target then
             state.NeedsInspection=false
-            stop(current.ranked and ("FOUND: ranked match, "..current.reward.." candy") or "FOUND: public match, 10 candy",g)
+            stop("FOUND: public match, 10 candy",g)
             return false
         end
         status("Dismissing final dialogue...")
@@ -372,7 +371,7 @@ local function run(g)
         if q then
             state.NeedsInspection=false
             if q.target then
-                stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return
+                stop("FOUND: public match, 10 candy",g);return
             end
             if not closeQuest(q,g) then return end
         end
@@ -386,7 +385,7 @@ local function run(g)
         q=quest()
         if q and q.target then
             state.NeedsInspection=false
-            stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return
+            stop("FOUND: public match, 10 candy",g);return
         end
         if not dismissFinalDialogue(g) then return end
         q=quest() or inspectQuest(g)
@@ -394,7 +393,7 @@ local function run(g)
         if not q then error("Quest panel unreadable; retrying inspection",0) end
         state.NeedsInspection=false
         if q.target then
-            stop(q.ranked and ("FOUND: ranked match, "..q.reward.." candy") or "FOUND: public match, 10 candy",g);return
+            stop("FOUND: public match, 10 candy",g);return
         end
         status("Reward "..q.reward.."; rerolling")
         if not closeQuest(q,g) then return end
