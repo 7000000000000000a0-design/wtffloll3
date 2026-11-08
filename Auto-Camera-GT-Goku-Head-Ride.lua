@@ -761,7 +761,7 @@ local function macroTap(vk)
     macroHeldKeys[vk]=nil
 end
 macrosTab:Section("Aizen Macros")
-aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=true,Flag="macro_use_aizen",Callback=function(on)
+aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=false,Callback=function(on)
     aizenOn=on
     if on and dioOn then
         dioOn=false
@@ -807,7 +807,7 @@ end
 
 
 macrosTab:Section("Gojo Macros")
-gojoToggle=macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Flag="macro_use_gojo",Callback=function(on)
+gojoToggle=macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Callback=function(on)
     gojoOn=on
     if on and dioOn then
         dioOn=false
@@ -858,7 +858,7 @@ end
 
 
 macrosTab:Section("DIO Macros")
-dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Flag="macro_use_dio",Callback=function(on)
+dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Callback=function(on)
     dioOn=on
     if on then
         aizenOn=false;gojoOn=false
@@ -897,11 +897,6 @@ local function runDioMacro()
 end
 macrosTab:Keybind({Name="Uptilt",Default="X",Flag="dio_uptilt_key",Mode="Press",
     Callback=function() runDioMacro() end})
-
--- Apply saved selections immediately; Nova also restores their callbacks on its next frame.
-aizenOn=aizenToggle.Value==true
-gojoOn=gojoToggle.Value==true
-dioOn=dioToggle.Value==true
 
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     pcall(updateMacroNotice)
