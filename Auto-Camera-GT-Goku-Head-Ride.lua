@@ -1379,7 +1379,6 @@ local function mountHeadRide()
         controls[id] = tab:Dropdown({Name = name, Options = options, Default = options[default + 1], Flag = id})
     end
 
-    tab:Section("Head Ride")
     controls.ride_on = tab:Toggle({Name = "Enabled", Default = false})
     tab:Keybind({
         Name = "Toggle Head Ride", Default = "F3", Mode = "Press", Flag = "ride_toggle_key",
@@ -1391,6 +1390,7 @@ local function mountHeadRide()
             end
         end,
     })
+    tab:Section("Head Ride Settings")
     rideKb = tab:Keybind({
         Name = "Hold to Head Ride", Default = "9", Mode = "Hold", Flag = "ride_kb",
     })
