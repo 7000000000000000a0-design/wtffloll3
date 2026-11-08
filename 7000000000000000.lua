@@ -127,8 +127,8 @@ local menuColorSource=table.concat({
     "        if type(saved.__menu)==\"string\" then applyMenuColor(hexToColor(saved.__menu) or C.bg) end",
     "        settings:Colorpicker({Name=\"Menu color\",Default=C.bg,Callback=function(c) applyMenuColor(c); Window:Save() end})",
     "        settings:Button({Name=\"Upload background\", Callback=function()",
-    "            local ok = pcall(writefile, folder .. \"/menu-background-request.txt\", tostring(tick()))",
-    "            Window:Notify({Title=\"Upload background\", Content=ok and \"Choose a PNG or JPG in the Windows picker. Start the menu helper if it does not open.\" or \"The executor workspace is unavailable.\"})",
+    "            local ok = pcall(writefile, folder .. \"/discord-background-request.txt\", tostring(tick()))",
+    "            Window:Notify({Title=\"Upload background\", Content=ok and \"Checking Discord for the latest PNG or JPG. Keep the Discord background helper running.\" or \"The executor workspace is unavailable.\"})",
     "        end})",
     "",
 }, "\n")
