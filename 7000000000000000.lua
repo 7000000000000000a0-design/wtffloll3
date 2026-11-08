@@ -126,6 +126,10 @@ local menuColorSource=table.concat({
     "        end",
     "        if type(saved.__menu)==\"string\" then applyMenuColor(hexToColor(saved.__menu) or C.bg) end",
     "        settings:Colorpicker({Name=\"Menu color\",Default=C.bg,Callback=function(c) applyMenuColor(c); Window:Save() end})",
+    "        settings:Button({Name=\"Upload background\", Callback=function()",
+    "            local ok = pcall(writefile, folder .. \"/menu-background-request.txt\", tostring(tick()))",
+    "            Window:Notify({Title=\"Upload background\", Content=ok and \"Choose a PNG or JPG in the Windows picker. Start the menu helper if it does not open.\" or \"The executor workspace is unavailable.\"})",
+    "        end})",
     "",
 }, "\n")
 local accentMarker="        accentEl.menuAccent = true"
@@ -213,10 +217,51 @@ local smoothScrollSource=table.concat({
     "",
     "",
 }, "\n")
+local menuBackgroundSource=table.concat({
+    "        local backgroundPath = folder .. \"/menu-background\"",
+    "        local background, backgroundVersion, nextBackgroundRead",
+    "        local alphabet = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\"",
+    "        local digits = {}",
+    "        for i = 1, #alphabet do digits[alphabet:byte(i)] = i - 1 end",
+    "        local function decodeBackground(encoded)",
+    "            if #encoded > 2796204 or #encoded % 4 ~= 0 then return nil end",
+    "            local chunks = {}",
+    "            for i = 1, #encoded, 4 do",
+    "                local a, b, c, d = encoded:byte(i, i + 3)",
+    "                local first, second, third, fourth = digits[a], digits[b], digits[c], digits[d]",
+    "                if not first or not second then return nil end",
+    "                local high = first * 4 + math.floor(second / 16)",
+    "                if third and fourth then",
+    "                    chunks[#chunks + 1] = string.char(high, (second % 16) * 16 + math.floor(third / 4), (third % 4) * 64 + fourth)",
+    "                elseif i + 3 == #encoded and d == 61 and (third or c == 61) then",
+    "                    chunks[#chunks + 1] = third and string.char(high, (second % 16) * 16 + math.floor(third / 4)) or string.char(high)",
+    "                else",
+    "                    return nil",
+    "                end",
+    "            end",
+    "            local data = table.concat(chunks)",
+    "            if data:sub(1, 4) == \"\\137PNG\" or data:sub(1, 3) == \"\\255\\216\\255\" then return data end",
+    "        end",
+    "        local function drawBackground(x, y, w, h)",
+    "            local now = tick()",
+    "            if type(readfile) == \"function\" and now >= (nextBackgroundRead or 0) then",
+    "                nextBackgroundRead = now + 0.75",
+    "                local ok, version = pcall(readfile, backgroundPath .. \"-version.txt\")",
+    "                if ok and version ~= backgroundVersion then",
+    "                    local loaded, encoded = pcall(readfile, backgroundPath .. \".txt\")",
+    "                    if loaded and type(encoded) == \"string\" then",
+    "                        local decoded = decodeBackground(encoded)",
+    "                        if decoded then background, backgroundVersion = decoded, version end",
+    "                    end",
+    "                end",
+    "            end",
+    "            if background then picture(\"__menu_background\", background, x, y, w, h, 2, 0.42) end",
+    "        end",
+}, "\n") .. "\n"
 local pageStart=source:find("    local function drawPage(",1,true)
 local pageEnd=pageStart and source:find("    local function drawWindow(",pageStart,true)
 assert(pageStart and pageEnd,"Nova scroll layout changed")
-source=source:sub(1,pageStart-1)..smoothScrollSource..source:sub(pageEnd)
+source=source:sub(1,pageStart-1)..smoothScrollSource..menuBackgroundSource..source:sub(pageEnd)
 -- Consume wheel updates even while the menu is closed so old input is discarded.
 local wheelFrame = "        readInput()"
 local wheelFrameStart, wheelFrameEnd = source:find(wheelFrame, 1, true)
@@ -288,6 +333,9 @@ source = source:sub(1, sliderValueStart - 1) .. [=[
 -- Sample key state even while a text field or key picker owns the input.
 source = source:gsub("        if binding or focus then return end\n        for _, tab", "        local acceptsKeys = not binding and not focus and (not isrbxactive or isrbxactive() == true)\n        for _, tab", 1)
 source = source:gsub("local hit, down = key%(el.Value%)", "local hit, down = key(el.Value)\n                    hit, down = hit and acceptsKeys, down and acceptsKeys", 1)
+source = source:gsub("local function picture%(key, data, x, y, w, h, z%)", "local function picture(key, data, x, y, w, h, z, alpha)", 1)
+source = source:gsub('put%(o, c, "ZIndex", z or 4%) put%(o, c, "Transparency", Fade%)', 'put(o, c, "ZIndex", z or 4) put(o, c, "Transparency", (alpha or 1) * Fade)', 1)
+source = source:gsub("        rect%(x, y, w, h, C.bg, 1, 10%)", "        rect(x, y, w, h, C.bg, 1, 10)\n        drawBackground(x + SIDEBAR, y, w - SIDEBAR, h)", 1)
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
