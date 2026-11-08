@@ -631,7 +631,7 @@ local function noticeDrawing(kind,props)
     for key,value in pairs(props)do object[key]=value end
     return object
 end
-local function showMacroNotice(on)
+local function showToggleNotice(on, feature)
     if not macroNotice then
         macroNotice={parts={}}
         local function background(kind)
@@ -667,7 +667,7 @@ local function showMacroNotice(on)
         macroNotice.parts[#macroNotice.parts+1]=macroNotice.title
         macroNotice.parts[#macroNotice.parts+1]=macroNotice.text
     end
-    macroNotice.text.Text=on and "Macro is ON" or "Macro is OFF"
+    macroNotice.text.Text=feature .. (on and " is ON" or " is OFF")
     macroNoticeUntil=(tick and tick() or os.clock())+2
 end
 local function updateMacroNotice()
@@ -706,7 +706,7 @@ macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mod
     macrosOn=macroSavedState.Value==true
     window:Save()
     print("[Macros] "..(macrosOn and "ON" or "OFF"))
-    local noticeOK,noticeErr=pcall(showMacroNotice,macrosOn)
+    local noticeOK,noticeErr=pcall(showToggleNotice,macrosOn,"Macro")
     if not noticeOK then macroReport(tostring(noticeErr)) end
     if macrosOn and not macroReady() then
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
@@ -1337,6 +1337,7 @@ local function mountHeadRide()
             if robloxFocused() then
                 local enabled = controls.ride_on
                 enabled:Set(not enabled.Value)
+                pcall(showToggleNotice, enabled.Value, "Head Ride")
             end
         end,
     })
