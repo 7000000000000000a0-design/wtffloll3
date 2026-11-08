@@ -135,18 +135,7 @@ source=source:sub(1,accentEnd).."\n"..menuColorSource..source:sub(accentEnd+1)
 source=source:gsub("__accent = accentHex, __mouseoffset", "__accent = accentHex, __menu = colorToHex(C.bg), __mouseoffset")
 source=source:gsub("applyAccent%(c%); markChanged%(%)", "applyAccent(c); markChanged(); Window:Save()")
 local smoothScrollSource=table.concat({
-    "    local wheelPending=0",
-    "    local wheelConnections={}",
-    "    pcall(function()",
-    "        local input=game:GetService(\"UserInputService\")",
-    "        wheelConnections[#wheelConnections+1]=input.InputChanged:Connect(function(event)",
-    "            pcall(function()",
-    "                if tostring(event.UserInputType):find(\"MouseWheel\",1,true) then",
-    "                    wheelPending=wheelPending+event.Position.Z",
-    "                end",
-    "            end)",
-    "        end)",
-    "    end)",
+    "    local wheelDelta = 0",
     "    local function drawPage(tab,x,y,w,h)",
     "        local s=tab.scroll",
     "        local list,total={},0",
@@ -158,14 +147,13 @@ local smoothScrollSource=table.concat({
     "        s.visual=clamp(s.visual or 0,0,maxScroll)",
     "        local hovered=over(x,y,w+14,h)",
     "        if hovered and not focus and not popup then",
-    "            if wheelPending~=0 then s.target=s.target-wheelPending*48 end",
+    "            if open then s.target=s.target+wheelDelta*48 end",
     "            if key(0x28) then s.target=s.target+42 end",
     "            if key(0x26) then s.target=s.target-42 end",
     "            if key(0x22) then s.target=s.target+h*.85 end",
     "            if key(0x21) then s.target=s.target-h*.85 end",
     "            if pressed(x,y,w,h)then s.grab=M.y;s.grabTarget=s.target end",
     "        end",
-    "        wheelPending=0",
     "        if not M.down then s.grab=nil;s.bar=nil end",
     "        if s.grab and M.dragged then s.target=s.grabTarget-(M.y-s.grab) end",
     "        local barH=math.max(28,h*h/math.max(h,total))",
@@ -205,7 +193,17 @@ local pageStart=source:find("    local function drawPage(",1,true)
 local pageEnd=pageStart and source:find("    local function drawWindow(",pageStart,true)
 assert(pageStart and pageEnd,"Nova scroll layout changed")
 source=source:sub(1,pageStart-1)..smoothScrollSource..source:sub(pageEnd)
-source=source:gsub("alive = false\n        if saveAt", "alive = false\n        for _,connection in ipairs(wheelConnections)do pcall(function()connection:Disconnect()end)end\n        if saveAt")
+-- The Windows wheel helper emits F13/F14 pulses. Poll both every frame
+-- so a pulse outside the open page cannot carry over to the next hover.
+local wheelFrame = "        readInput()"
+local wheelFrameStart, wheelFrameEnd = source:find(wheelFrame, 1, true)
+assert(wheelFrameStart, "Nova input loop changed")
+source = source:sub(1, wheelFrameEnd) .. [=[
+
+        local wheelUp = key(0x7C)
+        local wheelDown = key(0x7D)
+        wheelDelta = (wheelDown and 1 or 0) - (wheelUp and 1 or 0)
+        if not isrbxactive or not isrbxactive() then wheelDelta = 0 end]=] .. source:sub(wheelFrameEnd + 1)
 local ownedDrawings={}
 local function clearOwnedDrawings()
     for _,drawing in ipairs(ownedDrawings)do
