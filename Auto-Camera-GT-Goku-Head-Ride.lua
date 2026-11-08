@@ -285,6 +285,9 @@ source = source:sub(1, sliderValueStart - 1) .. [=[
             end
         end
         mtext(shown, x + w - 17 - textWidth(shown, 13), y + 15, C.dim, 13, 5)]=] .. source:sub(sliderValueEnd + 1)
+-- Sample key state even while a text field or key picker owns the input.
+source = source:gsub("        if binding or focus then return end\n        for _, tab", "        local acceptsKeys = not binding and not focus and (not isrbxactive or isrbxactive() == true)\n        for _, tab", 1)
+source = source:gsub("local hit, down = key%(el.Value%)", "local hit, down = key(el.Value)\n                    hit, down = hit and acceptsKeys, down and acceptsKeys", 1)
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
@@ -904,7 +907,8 @@ dioOn=dioToggle.Value==true
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     pcall(updateMacroNotice)
     if not alive then return end
-    macroInputAllowed()
+    local inputOK, acceptsInput = pcall(macroInputAllowed)
+    if not inputOK or not acceptsInput then return end
     local ok,err=pcall(update)
     if not ok then
         message("Tracking unavailable; see Matcha output.")
@@ -1030,8 +1034,8 @@ local function mountHeadRide()
     -- target selection
     -- ===========================================================================
     local function screenDistToCentre(pos)
-        local screen, onScreen = WorldToScreen(pos)
-        if not onScreen then return nil end
+        local projected, screen, onScreen = pcall(WorldToScreen, pos)
+        if not projected or not screen or not onScreen then return nil end
         local cam  = safe(function() return workspace.CurrentCamera end, nil)
         local vps  = cam and safe(function() return cam.ViewportSize end, nil)
         if not vps then return nil end
@@ -1076,7 +1080,7 @@ local function mountHeadRide()
 
     local function targetValid(plr)
         if not plr then return false end
-        if not isAlive(plr) then return false end
+        if not isAlive(plr) or (gv("ride_team", false) and sameTeam(plr)) then return false end
         local origin = myPos()
         local root   = rootOf(charOf(plr))
         local pos    = root and safe(function() return root.Position end, nil)
@@ -1093,7 +1097,7 @@ local function mountHeadRide()
     end
 
     local function rideEnabled()
-        return robloxFocused() and gv("ride_on", false) and keybindActive()
+        return gv("ride_on", false) and keybindActive() and macroInputAllowed()
     end
 
     -- ===========================================================================
@@ -1141,12 +1145,17 @@ local function mountHeadRide()
         dt = math.clamp(dt, 0.001, 0.1)
 
         if not rideEnabled() then
-            currentTarget = nil
+            currentTarget, lockedTarget = nil, nil
             lastStatus = "idle"
             return
         end
 
-        stepCount = stepCount + 1
+        local me = myRoot()
+        if not me or not isAlive(LocalPlayer) then
+            currentTarget, lockedTarget = nil, nil
+            lastStatus = "no living character"
+            return
+        end
 
         -- keep the locked target while it is still valid
         if gv("ride_lock", true) and targetValid(lockedTarget) then
@@ -1158,12 +1167,6 @@ local function mountHeadRide()
 
         if not currentTarget then
             lastStatus = "no target"
-            return
-        end
-
-        local me = myRoot()
-        if not me then
-            lastStatus = "no character"
             return
         end
 
@@ -1188,7 +1191,7 @@ local function mountHeadRide()
 
         if mode == 0 then
             local dest
-            if climb > 0 and not arrived then
+            if climb > 0 then
                 -- travel at a fixed speed, so the approach reads as a climb
                 local maxStep = climb * dt
                 if dist > maxStep then
@@ -1200,6 +1203,7 @@ local function mountHeadRide()
                 dest = goal
             end
             if pcall(function() me.Position = dest end) then
+                stepCount = stepCount + 1
                 lastStatus = arrived and "riding (position)" or "climbing"
             else
                 lastStatus = "position write failed"
@@ -1215,6 +1219,7 @@ local function mountHeadRide()
                 ok = pcall(function() me.Velocity = want end)
             end
             if ok then
+                stepCount = stepCount + 1
                 lastStatus = arrived and "riding (velocity)" or "climbing"
             else
                 lastStatus = "velocity write failed"
@@ -1222,21 +1227,29 @@ local function mountHeadRide()
         end
     end
 
+    local function updateRide()
+        local ok, err = pcall(rideStep)
+        if not ok then
+            currentTarget, lockedTarget = nil, nil
+            lastStatus = tostring(err)
+        end
+    end
+
     connections[#connections + 1] = RunService.Heartbeat:Connect(function()
         if not alive then return end
-        if updateSource() == 0 then rideStep() end
+        if updateSource() == 0 then updateRide() end
     end)
 
     connections[#connections + 1] = RunService.RenderStepped:Connect(function()
         if not alive then return end
-        if updateSource() == 1 then rideStep() end
+        if updateSource() == 1 then updateRide() end
     end)
 
     -- dedicated loop, so the correction rate is not capped by your frame rate
     task.spawn(function()
         while alive do
             if updateSource() == 2 then
-                rideStep()
+                updateRide()
                 local hz = math.clamp(tonumber(gv("ride_hz", 200)) or 200, 30, 1000)
                 wait(1 / hz)
             else
@@ -1259,31 +1272,19 @@ local function mountHeadRide()
     -- ===========================================================================
     local circle, label, line
 
-    local function makeDrawings()
-        if circle then return end
-        circle = safe(function() return Drawing.new("Circle") end, nil)
-        label  = safe(function() return Drawing.new("Text") end, nil)
-        line   = safe(function() return Drawing.new("Line") end, nil)
-        pcall(function()
-            circle.Thickness = 2
-            circle.NumSides  = 24
-            circle.Radius    = 14
-            circle.Visible   = false
-            label.Center     = true
-            label.Outline    = true
-            label.FontSize   = 13
-            label.Visible    = false
-            line.Thickness   = 1
-            line.Visible     = false
-        end)
+    local function makeDrawing(kind, configure)
+        local drawing = safe(function() return Drawing.new(kind) end, nil)
+        if drawing then
+            pcall(function() drawing.Visible = false end)
+            pcall(configure, drawing)
+        end
+        return drawing
     end
 
     local function hideDrawings()
-        pcall(function()
-            if circle then circle.Visible = false end
-            if label  then label.Visible  = false end
-            if line   then line.Visible   = false end
-        end)
+        for _, drawing in pairs({circle, label, line}) do
+            pcall(function() drawing.Visible = false end)
+        end
     end
 
     local function indicatorColour()
@@ -1301,13 +1302,12 @@ local function mountHeadRide()
 
     connections[#connections + 1] = RunService.RenderStepped:Connect(function()
         if not alive then return end
-        if not robloxFocused() or not gv("ride_marker", true) or not currentTarget then
+        local showMarker = gv("ride_marker", true)
+        local showTracer = gv("ride_tracer", false)
+        if not currentTarget or not rideEnabled() or not (showMarker or showTracer) then
             hideDrawings()
             return
         end
-
-        makeDrawings()
-        if not circle or not label or not line then return end
 
         local char = charOf(currentTarget)
         local head = partOf(char, "Head") or rootOf(char)
@@ -1317,8 +1317,8 @@ local function mountHeadRide()
             return
         end
 
-        local screen, onScreen = WorldToScreen(pos)
-        if not onScreen then
+        local projected, screen, onScreen = pcall(WorldToScreen, pos)
+        if not projected or not screen or not onScreen then
             hideDrawings()
             return
         end
@@ -1327,30 +1327,45 @@ local function mountHeadRide()
         local origin = myPos()
         local dist   = origin and (pos - origin).Magnitude or 0
 
-        pcall(function()
-            circle.Color    = col
-            circle.Position = Vector2.new(screen.X, screen.Y)
-            circle.Visible  = true
-
-            label.Color     = col
-            label.Text      = safe(function() return currentTarget.Name end, "?")
-                .. "  " .. math.floor(dist) .. "m"
-            label.Position  = Vector2.new(screen.X, screen.Y - 30)
-            label.Visible   = true
-        end)
-
-        if gv("ride_tracer", false) then
-            local cam = safe(function() return workspace.CurrentCamera end, nil)
-            local vps = cam and safe(function() return cam.ViewportSize end, nil)
-            if vps then
+        if showMarker then
+            circle = circle or makeDrawing("Circle", function(draw)
+                draw.Thickness, draw.Radius = 2, 14
+            end)
+            label = label or makeDrawing("Text", function(draw)
+                draw.Center, draw.Outline = true, true
+                draw.FontSize = 13
+            end)
+            if circle then
                 pcall(function()
-                    line.Color   = col
-                    line.From    = Vector2.new(vps.X / 2, vps.Y)
-                    line.To      = Vector2.new(screen.X, screen.Y)
-                    line.Visible = true
+                    circle.Color, circle.Position = col, Vector2.new(screen.X, screen.Y)
+                    circle.Visible = true
+                end)
+            end
+            if label then
+                pcall(function()
+                    label.Color = col
+                    label.Text = safe(function() return currentTarget.Name end, "?")
+                        .. "  " .. math.floor(dist) .. " studs"
+                    label.Position, label.Visible = Vector2.new(screen.X, screen.Y - 30), true
                 end)
             end
         else
+            if circle then pcall(function() circle.Visible = false end) end
+            if label then pcall(function() label.Visible = false end) end
+        end
+
+        local viewport = showTracer and safe(function() return workspace.CurrentCamera.ViewportSize end, nil)
+        if viewport then
+            line = line or makeDrawing("Line", function(draw) draw.Thickness = 1 end)
+            if line then
+                pcall(function()
+                    line.Color = col
+                    line.From = Vector2.new(viewport.X / 2, viewport.Y)
+                    line.To = Vector2.new(screen.X, screen.Y)
+                    line.Visible = true
+                end)
+            end
+        elseif line then
             pcall(function() line.Visible = false end)
         end
     end)
@@ -1375,7 +1390,7 @@ local function mountHeadRide()
     tab:Keybind({
         Name = "Toggle Head Ride", Default = "F3", Mode = "Press", Flag = "ride_toggle_key",
         Callback = function()
-            if robloxFocused() then
+            if macroInputAllowed() then
                 local enabled = controls.ride_on
                 enabled:Set(not enabled.Value)
                 pcall(showToggleNotice, enabled.Value, "Head Ride")
