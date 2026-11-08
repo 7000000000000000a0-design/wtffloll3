@@ -737,17 +737,16 @@ local function updateMacroNotice()
     end
     for _,object in ipairs(macroNotice.parts)do object.Visible=visible end
 end
--- The visible switch and keyboard shortcut share the same saved value.
-local macroSavedState=macrosTab:Toggle({
-    Name="Macros Enabled",Default=false,Flag="macro_master_enabled",
+-- The master switch starts off on every load.
+local macroMasterSwitch=macrosTab:Toggle({
+    Name="Macros Enabled",Default=false,
     Callback=function(on) macrosOn=on end,
 })
-macrosOn=macroSavedState.Value==true
+macrosOn=macroMasterSwitch.Value==true
 macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mode="Press",Callback=function()
     if not alive or not robloxFocused() or robloxTextFocused() then return end
-    macroSavedState:Set(not macroSavedState.Value)
-    macrosOn=macroSavedState.Value==true
-    window:Save()
+    macroMasterSwitch:Set(not macroMasterSwitch.Value)
+    macrosOn=macroMasterSwitch.Value==true
     print("[Macros] "..(macrosOn and "ON" or "OFF"))
     local noticeOK,noticeErr=pcall(showToggleNotice,macrosOn,"Macro")
     if not noticeOK then macroReport(tostring(noticeErr)) end
@@ -1386,7 +1385,7 @@ local function mountHeadRide()
     end
 
     tab:Section("Head Ride")
-    toggle("ride_on", "Enabled", true)
+    controls.ride_on = tab:Toggle({Name = "Enabled", Default = false})
     tab:Keybind({
         Name = "Toggle Head Ride", Default = "F3", Mode = "Press", Flag = "ride_toggle_key",
         Callback = function()
