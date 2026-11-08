@@ -234,6 +234,31 @@ source=table.concat({
 }, "\n")..source
 -- Let Nova display, save and capture the Gojo middle-mouse shortcut.
 source=source:gsub("local KEY_NAME = {}", 'VK.MButton=0x04\nKEY_LABEL[0x04]="Middle Mouse"\nlocal KEY_NAME = {}',1)
+-- Add a numeric entry field to Head Ride sliders using Nova's text focus.
+local sliderValueStart, sliderValueEnd = source:find([=[
+        local shown = tostring(el.Value) .. (el.Suffix or "")
+        mtext(shown, x + w - 12 - textWidth(shown, 13), y + 15, C.dim, 13, 5)]=], 1, true)
+assert(sliderValueStart, "Nova slider layout changed")
+source = source:sub(1, sliderValueStart - 1) .. [=[
+        local shown = tostring(el.Value) .. (el.Suffix or "")
+        if el.Flag and el.Flag:sub(1, 5) == "ride_" then
+            local bx, by, bw, bh = x + w - 88, y + 4, 76, 21
+            local focused = focus == el.id
+            rect(bx, by, bw, bh, C.panel, 4, 4)
+            border(bx, by, bw, bh, focused and C.accent or C.line, 4, 4)
+            if focused then shown = focusValue .. "|" end
+            if clicked(bx, by, bw, bh) and not focused then
+                blur()
+                focus, focusValue = el.id, ""
+                focusCommit = function(value)
+                    local number = tonumber(value)
+                    if number and number == number and math.abs(number) < math.huge then
+                        el:Set(number)
+                    end
+                end
+            end
+        end
+        mtext(shown, x + w - 17 - textWidth(shown, 13), y + 15, C.dim, 13, 5)]=] .. source:sub(sliderValueEnd + 1)
 local library = loadstring(source)()
 local Nova = library or _G.Nova
 assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
@@ -1282,40 +1307,40 @@ local function mountHeadRide()
 
     local tab = window:Tab("Head Ride")
     local function toggle(id, name, default)
-        controls[id] = tab:Toggle({Name = name, Default = default})
+        controls[id] = tab:Toggle({Name = name, Default = default, Flag = id})
     end
     local function slider(id, name, min, max, default, increment)
-        controls[id] = tab:Slider({Name = name, Min = min, Max = max, Default = default, Increment = increment})
+        controls[id] = tab:Slider({Name = name, Min = min, Max = max, Default = default, Increment = increment, Flag = id})
     end
     local function dropdown(id, name, options, default)
-        controls[id] = tab:Dropdown({Name = name, Options = options, Default = options[default + 1]})
+        controls[id] = tab:Dropdown({Name = name, Options = options, Default = options[default + 1], Flag = id})
     end
 
     tab:Section("Head Ride")
-    toggle("ride_on", "Enabled", false)
-    rideKb = tab:Keybind({Name = "Activation key", Default = "9", Mode = "Hold"})
+    toggle("ride_on", "Enabled", true)
+    rideKb = tab:Keybind({Name = "Activation key", Default = "9", Mode = "Hold", Flag = "ride_kb"})
     tab:Label("Hold 9 by default. Unbind the key to run continuously.")
-    slider("ride_height", "Height above head", 0, 12, 4, 0.1)
-    slider("ride_pred", "Prediction (s)", 0, 0.5, 0.08, 0.01)
-    slider("ride_range", "Max range", 10, 500, 150, 1)
-    dropdown("ride_mode", "Move by", {"Set position", "Velocity"}, 0)
-    slider("ride_climb", "Rise speed (studs/s)", 0, 300, 45, 1)
+    slider("ride_height", "Height above head", 0, 12, 1.5, 0.1)
+    slider("ride_pred", "Prediction (s)", 0, 0.5, 0.32, 0.01)
+    slider("ride_range", "Max range", 10, 500, 10, 1)
+    dropdown("ride_mode", "Move by", {"Set position", "Velocity"}, 1)
+    slider("ride_climb", "Rise speed (studs/s)", 0, 300, 87, 1)
     slider("ride_gain", "Velocity gain", 1, 40, 12, 0.1)
     dropdown("ride_tick", "Update on", {"Heartbeat", "RenderStepped", "Fast loop"}, 2)
-    slider("ride_hz", "Fast loop rate (per second)", 30, 1000, 200, 1)
+    slider("ride_hz", "Fast loop rate (per second)", 30, 1000, 1000, 1)
 
     tab:Section("Target")
     dropdown("ride_target", "Pick by", {"Nearest", "Closest to crosshair"}, 0)
     toggle("ride_lock", "Stay on one target", true)
-    toggle("ride_team", "Ignore teammates", false)
+    toggle("ride_team", "Ignore teammates", true)
     tab:Button({Name = "Drop target", Callback = function()
         lockedTarget, currentTarget = nil, nil
     end})
 
     tab:Section("Indicator")
     toggle("ride_marker", "Show target marker", true)
-    controls.ride_colour = tab:Colorpicker({Name = "Marker color", Default = Color3.fromRGB(120, 220, 255)})
-    toggle("ride_tracer", "Tracer line", false)
+    controls.ride_colour = tab:Colorpicker({Name = "Marker color", Default = Color3.fromRGB(255, 255, 255), Flag = "ride_colour"})
+    toggle("ride_tracer", "Tracer line", true)
 
     tab:Section("Misc")
     local status = tab:Paragraph({Name = "Live status", Content = "idle"})
