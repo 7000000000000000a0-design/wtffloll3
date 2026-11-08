@@ -615,6 +615,28 @@ local function robloxFocused()
     local ok,active=pcall(isrbxactive)
     return ok and active==true
 end
+local _, chatConfig = pcall(function()
+    return game:GetService("TextChatService"):FindFirstChild("ChatInputBarConfiguration")
+end)
+local _, inputService = pcall(function() return game:GetService("UserInputService") end)
+local chatFromShortcut, slashWasDown = false, false
+
+local function macroInputAllowed()
+    if not robloxFocused() then return false end
+    local chatOK, chatFocused = pcall(function() return chatConfig.IsFocused end)
+    if chatOK and type(chatFocused) == "boolean" then return not chatFocused end
+    local boxOK, textBox = pcall(function() return inputService:GetFocusedTextBox() end)
+    if boxOK then return not textBox end
+
+    -- External runtimes may only expose raw keyboard state.
+    if type(iskeypressed) ~= "function" then return false end
+    local slashDown = iskeypressed(0xBF)
+    if slashDown and not slashWasDown then chatFromShortcut = true end
+    slashWasDown = slashDown
+    if iskeypressed(0x0D) or iskeypressed(0x1B) then chatFromShortcut = false end
+    return not chatFromShortcut
+end
+
 local function macroReady()
     return type(iskeypressed)=="function" and type(keypress)=="function"
         and type(keyrelease)=="function" and type(isrbxactive)=="function"
@@ -701,7 +723,7 @@ local macroSavedState=macrosTab:Toggle({
 macroSavedState:SetVisible(false)
 macrosOn=macroSavedState.Value==true
 macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mode="Press",Callback=function()
-    if not alive or not robloxFocused() then return end
+    if not alive or not macroInputAllowed() then return end
     macroSavedState:Set(not macrosOn)
     macrosOn=macroSavedState.Value==true
     window:Save()
@@ -731,7 +753,7 @@ aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=true,Flag="macro_us
     end
 end})
 local function runMacro(selected)
-    if not alive or not macrosOn or not aizenOn or gojoOn or macroBusy or not robloxFocused() then return end
+    if not alive or not macrosOn or not aizenOn or gojoOn or macroBusy or not macroInputAllowed() then return end
     if not macroReady() then
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
         return
@@ -739,10 +761,10 @@ local function runMacro(selected)
     macroBusy=true
     task.spawn(function()
         local ok,err=pcall(function()
-            if not alive or not macrosOn or not aizenOn or gojoOn or not robloxFocused() then return end
+            if not alive or not macrosOn or not aizenOn or gojoOn or not macroInputAllowed() then return end
             macroTap(selected.first)
             task.wait(selected.delay)
-            if alive and macrosOn and aizenOn and not gojoOn and robloxFocused() then macroTap(selected.second) end
+            if alive and macrosOn and aizenOn and not gojoOn and macroInputAllowed() then macroTap(selected.second) end
         end)
         for vk in pairs(macroHeldKeys)do
             pcall(keyrelease,vk)
@@ -783,7 +805,7 @@ local gojoBindings={
     {name="TP + Blue (blue)",key="V",steps={{0x33,.020},{0x51,0}}},
 }
 local function runGojoMacro(selected)
-    if not alive or not macrosOn or not gojoOn or macroBusy or not robloxFocused() then return end
+    if not alive or not macrosOn or not gojoOn or macroBusy or not macroInputAllowed() then return end
     if not macroReady() then
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
         return
@@ -792,7 +814,7 @@ local function runGojoMacro(selected)
     task.spawn(function()
         local ok,err=pcall(function()
             for _,step in ipairs(selected.steps)do
-                if not alive or not macrosOn or not gojoOn or not robloxFocused() then return end
+                if not alive or not macrosOn or not gojoOn or not macroInputAllowed() then return end
                 macroTap(step[1])
                 if step[2]>0 then task.wait(step[2]) end
             end
@@ -825,7 +847,7 @@ dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Flag="macro_use_
     end
 end})
 local function runDioMacro()
-    if not alive or not macrosOn or not dioOn or macroBusy or not robloxFocused() then return end
+    if not alive or not macrosOn or not dioOn or macroBusy or not macroInputAllowed() then return end
     if not macroReady() or type(mouse1press)~="function" or type(mouse1release)~="function" then
         macroReport("DIO requires mouse1press and mouse1release plus the keyboard macro APIs.")
         return
@@ -833,7 +855,7 @@ local function runDioMacro()
     macroBusy=true
     task.spawn(function()
         local mouseHeld,spaceHeld=false,false
-        local function active() return alive and macrosOn and dioOn and robloxFocused() end
+        local function active() return alive and macrosOn and dioOn and macroInputAllowed() end
         local ok,err=pcall(function()
             if not active() then return end
             mouseHeld=true;mouse1press()
@@ -864,6 +886,7 @@ dioOn=dioToggle.Value==true
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     pcall(updateMacroNotice)
     if not alive then return end
+    macroInputAllowed()
     local ok,err=pcall(update)
     if not ok then
         message("Tracking unavailable; see Matcha output.")
