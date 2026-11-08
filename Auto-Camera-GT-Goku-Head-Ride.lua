@@ -597,7 +597,7 @@ local macroBindings={
     {trigger=0x5A,first=0x33,second=0x31,delay=.040},
     {trigger=0x58,first=0x33,second=0x34,delay=.040},
 }
-local function macroFocused()
+local function robloxFocused()
     if type(isrbxactive)~="function" then return false end
     local ok,active=pcall(isrbxactive)
     return ok and active==true
@@ -688,7 +688,7 @@ local macroSavedState=macrosTab:Toggle({
 macroSavedState:SetVisible(false)
 macrosOn=macroSavedState.Value==true
 macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mode="Press",Callback=function()
-    if not alive or not macroFocused() then return end
+    if not alive or not robloxFocused() then return end
     macroSavedState:Set(not macrosOn)
     macrosOn=macroSavedState.Value==true
     window:Save()
@@ -718,7 +718,7 @@ aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=true,Flag="macro_us
     end
 end})
 local function runMacro(selected)
-    if not alive or not macrosOn or not aizenOn or gojoOn or macroBusy or not macroFocused() then return end
+    if not alive or not macrosOn or not aizenOn or gojoOn or macroBusy or not robloxFocused() then return end
     if not macroReady() then
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
         return
@@ -726,10 +726,10 @@ local function runMacro(selected)
     macroBusy=true
     task.spawn(function()
         local ok,err=pcall(function()
-            if not alive or not macrosOn or not aizenOn or gojoOn or not macroFocused() then return end
+            if not alive or not macrosOn or not aizenOn or gojoOn or not robloxFocused() then return end
             macroTap(selected.first)
             task.wait(selected.delay)
-            if alive and macrosOn and aizenOn and not gojoOn and macroFocused() then macroTap(selected.second) end
+            if alive and macrosOn and aizenOn and not gojoOn and robloxFocused() then macroTap(selected.second) end
         end)
         for vk in pairs(macroHeldKeys)do
             pcall(keyrelease,vk)
@@ -770,7 +770,7 @@ local gojoBindings={
     {name="TP + Blue (blue)",key="V",steps={{0x33,.020},{0x51,0}}},
 }
 local function runGojoMacro(selected)
-    if not alive or not macrosOn or not gojoOn or macroBusy or not macroFocused() then return end
+    if not alive or not macrosOn or not gojoOn or macroBusy or not robloxFocused() then return end
     if not macroReady() then
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
         return
@@ -779,7 +779,7 @@ local function runGojoMacro(selected)
     task.spawn(function()
         local ok,err=pcall(function()
             for _,step in ipairs(selected.steps)do
-                if not alive or not macrosOn or not gojoOn or not macroFocused() then return end
+                if not alive or not macrosOn or not gojoOn or not robloxFocused() then return end
                 macroTap(step[1])
                 if step[2]>0 then task.wait(step[2]) end
             end
@@ -812,7 +812,7 @@ dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Flag="macro_use_
     end
 end})
 local function runDioMacro()
-    if not alive or not macrosOn or not dioOn or macroBusy or not macroFocused() then return end
+    if not alive or not macrosOn or not dioOn or macroBusy or not robloxFocused() then return end
     if not macroReady() or type(mouse1press)~="function" or type(mouse1release)~="function" then
         macroReport("DIO requires mouse1press and mouse1release plus the keyboard macro APIs.")
         return
@@ -820,7 +820,7 @@ local function runDioMacro()
     macroBusy=true
     task.spawn(function()
         local mouseHeld,spaceHeld=false,false
-        local function active() return alive and macrosOn and dioOn and macroFocused() end
+        local function active() return alive and macrosOn and dioOn and robloxFocused() end
         local ok,err=pcall(function()
             if not active() then return end
             mouseHeld=true;mouse1press()
@@ -1039,7 +1039,7 @@ local function mountHeadRide()
     end
 
     local function rideEnabled()
-        return gv("ride_on", false) and keybindActive()
+        return robloxFocused() and gv("ride_on", false) and keybindActive()
     end
 
     -- ===========================================================================
@@ -1247,7 +1247,7 @@ local function mountHeadRide()
 
     connections[#connections + 1] = RunService.RenderStepped:Connect(function()
         if not alive then return end
-        if not gv("ride_marker", true) or not currentTarget then
+        if not robloxFocused() or not gv("ride_marker", true) or not currentTarget then
             hideDrawings()
             return
         end
@@ -1356,7 +1356,7 @@ local function mountHeadRide()
     tab:Button({Name = "Test movement write", Callback = function()
             -- yielding inside the render callback would stall the UI, so spawn it
             task.spawn(function()
-                if not alive then return end
+                if not alive or not robloxFocused() then return end
                 local r = myRoot()
                 if not r then
                     notify("No character found", "Head Ride", 3)
