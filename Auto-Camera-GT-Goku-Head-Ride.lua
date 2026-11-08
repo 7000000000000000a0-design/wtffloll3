@@ -963,8 +963,7 @@ local function mountHeadRide()
     -- ===========================================================================
     local targets      = {}     -- refreshed by a polling loop
     local currentTarget = nil
-    local rideKb       = nil    -- keybind widget, captured during render
-    local rideToggled = false
+    local rideKb
     local lockedTarget = nil
     local lastStatus   = "idle"
     local stepCount    = 0
@@ -1049,7 +1048,7 @@ local function mountHeadRide()
     -- keybind gate
     -- ===========================================================================
     local function keybindActive()
-        return rideKb and rideKb.Value and rideToggled
+        return rideKb and rideKb.Value and rideKb.State == true
     end
 
     local function rideEnabled()
@@ -1332,15 +1331,18 @@ local function mountHeadRide()
 
     tab:Section("Head Ride")
     toggle("ride_on", "Enabled", true)
-    rideKb = tab:Keybind({
-        Name = "Toggle Head Ride", Default = "9", Mode = "Press", Flag = "ride_kb",
+    tab:Keybind({
+        Name = "Toggle Head Ride", Default = "F3", Mode = "Press", Flag = "ride_toggle_key",
         Callback = function()
-            if robloxFocused() and gv("ride_on", false) then
-                rideToggled = not rideToggled
+            if robloxFocused() then
+                local enabled = controls.ride_on
+                enabled:Set(not enabled.Value)
             end
         end,
     })
-    tab:Label("Click the key box to rebind. Press the bound key to toggle the ride.")
+    rideKb = tab:Keybind({
+        Name = "Hold to Head Ride", Default = "9", Mode = "Hold", Flag = "ride_kb",
+    })
     slider("ride_height", "Height above head", 0, 12, 1.5, 0.1)
     slider("ride_pred", "Prediction (s)", 0, 0.5, 0.32, 0.01)
     slider("ride_range", "Max range", 10, 500, 10, 1)
@@ -1407,7 +1409,6 @@ local function mountHeadRide()
             end)
         end})
     tab:Button({Name = "Reset", Callback = function()
-        rideToggled = false
         controls.ride_on:Set(false)
         lockedTarget, currentTarget = nil, nil
         hideDrawings()
