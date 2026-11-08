@@ -135,7 +135,17 @@ source=source:sub(1,accentEnd).."\n"..menuColorSource..source:sub(accentEnd+1)
 source=source:gsub("__accent = accentHex, __mouseoffset", "__accent = accentHex, __menu = colorToHex(C.bg), __mouseoffset")
 source=source:gsub("applyAccent%(c%); markChanged%(%)", "applyAccent(c); markChanged(); Window:Save()")
 local smoothScrollSource=table.concat({
-    "    local wheelDelta = 0",
+    "    local wheelDelta, nativeWheelDelta, lastNativeWheel = 0, 0, -math.huge",
+    "    local wheelConnection",
+    "    pcall(function()",
+    "        local input = game:GetService(\"UserInputService\")",
+    "        wheelConnection = input.InputChanged:Connect(function(event)",
+    "            if tostring(event.UserInputType):find(\"MouseWheel\", 1, true) then",
+    "                nativeWheelDelta = nativeWheelDelta + event.Position.Z",
+    "                lastNativeWheel = tick()",
+    "            end",
+    "        end)",
+    "    end)",
     "    local function drawPage(tab,x,y,w,h)",
     "        local s=tab.scroll",
     "        local list,total={},0",
@@ -202,8 +212,13 @@ source = source:sub(1, wheelFrameEnd) .. [=[
 
         local wheelUp = key(0x7C)
         local wheelDown = key(0x7D)
-        wheelDelta = (wheelDown and 1 or 0) - (wheelUp and 1 or 0)
-        if not isrbxactive or not isrbxactive() then wheelDelta = 0 end]=] .. source:sub(wheelFrameEnd + 1)
+        wheelDelta = -nativeWheelDelta
+        nativeWheelDelta = 0
+        if tick() - lastNativeWheel > 0.2 then
+            wheelDelta = (wheelDown and 1 or 0) - (wheelUp and 1 or 0)
+        end
+        if type(isrbxactive) == "function" and not isrbxactive() then wheelDelta = 0 end]=] .. source:sub(wheelFrameEnd + 1)
+source = source:gsub("alive = false\n        if saveAt", "alive = false\n        if wheelConnection then pcall(function() wheelConnection:Disconnect() end) end\n        if saveAt", 1)
 local ownedDrawings={}
 local function clearOwnedDrawings()
     for _,drawing in ipairs(ownedDrawings)do
@@ -949,6 +964,7 @@ local function mountHeadRide()
     local targets      = {}     -- refreshed by a polling loop
     local currentTarget = nil
     local rideKb       = nil    -- keybind widget, captured during render
+    local rideToggled = false
     local lockedTarget = nil
     local lastStatus   = "idle"
     local stepCount    = 0
@@ -1033,7 +1049,7 @@ local function mountHeadRide()
     -- keybind gate
     -- ===========================================================================
     local function keybindActive()
-        return not rideKb or not rideKb.Value or rideKb.State == true
+        return rideKb and rideKb.Value and rideToggled
     end
 
     local function rideEnabled()
@@ -1316,8 +1332,15 @@ local function mountHeadRide()
 
     tab:Section("Head Ride")
     toggle("ride_on", "Enabled", true)
-    rideKb = tab:Keybind({Name = "Activation key", Default = "9", Mode = "Hold", Flag = "ride_kb"})
-    tab:Label("Hold 9 by default. Unbind the key to run continuously.")
+    rideKb = tab:Keybind({
+        Name = "Toggle Head Ride", Default = "9", Mode = "Press", Flag = "ride_kb",
+        Callback = function()
+            if robloxFocused() and gv("ride_on", false) then
+                rideToggled = not rideToggled
+            end
+        end,
+    })
+    tab:Label("Click the key box to rebind. Press the bound key to toggle the ride.")
     slider("ride_height", "Height above head", 0, 12, 1.5, 0.1)
     slider("ride_pred", "Prediction (s)", 0, 0.5, 0.32, 0.01)
     slider("ride_range", "Max range", 10, 500, 10, 1)
@@ -1384,6 +1407,7 @@ local function mountHeadRide()
             end)
         end})
     tab:Button({Name = "Reset", Callback = function()
+        rideToggled = false
         controls.ride_on:Set(false)
         lockedTarget, currentTarget = nil, nil
         hideDrawings()
