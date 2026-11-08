@@ -137,6 +137,20 @@ source=source:gsub("applyAccent%(c%); markChanged%(%)", "applyAccent(c); markCha
 local smoothScrollSource=table.concat({
     "    local wheelDelta, nativeWheelDelta, lastNativeWheel = 0, 0, -math.huge",
     "    local wheelConnection",
+    "    local wheelSignal = folder .. \"/menu-wheel.txt\"",
+    "    local wheelSession, wheelTotal, nextWheelRead = nil, 0, 0",
+    "    local function readWheelBridge(now)",
+    "        if type(readfile) ~= \"function\" or now < nextWheelRead then return 0 end",
+    "        nextWheelRead = now + 0.05",
+    "        local ok, signal = pcall(readfile, wheelSignal)",
+    "        if not ok or type(signal) ~= \"string\" then return 0 end",
+    "        local session, count = signal:match(\"^(%d+):(%-?%d+)$\")",
+    "        if not session then return 0 end",
+    "        count = tonumber(count)",
+    "        local delta = wheelSession == session and count - wheelTotal or 0",
+    "        wheelSession, wheelTotal = session, count",
+    "        return clamp(delta, -12, 12)",
+    "    end",
     "    pcall(function()",
     "        local input = game:GetService(\"UserInputService\")",
     "        wheelConnection = input.InputChanged:Connect(function(event)",
@@ -203,19 +217,18 @@ local pageStart=source:find("    local function drawPage(",1,true)
 local pageEnd=pageStart and source:find("    local function drawWindow(",pageStart,true)
 assert(pageStart and pageEnd,"Nova scroll layout changed")
 source=source:sub(1,pageStart-1)..smoothScrollSource..source:sub(pageEnd)
--- The Windows wheel helper emits F13/F14 pulses. Poll both every frame
--- so a pulse outside the open page cannot carry over to the next hover.
+-- Consume wheel updates even while the menu is closed so old input is discarded.
 local wheelFrame = "        readInput()"
 local wheelFrameStart, wheelFrameEnd = source:find(wheelFrame, 1, true)
 assert(wheelFrameStart, "Nova input loop changed")
 source = source:sub(1, wheelFrameEnd) .. [=[
 
-        local wheelUp = key(0x7C)
-        local wheelDown = key(0x7D)
+        local wheelNow = tick()
+        local bridgeDelta = readWheelBridge(wheelNow)
         wheelDelta = -nativeWheelDelta
         nativeWheelDelta = 0
-        if tick() - lastNativeWheel > 0.2 then
-            wheelDelta = (wheelDown and 1 or 0) - (wheelUp and 1 or 0)
+        if wheelNow - lastNativeWheel > 0.2 then
+            wheelDelta = bridgeDelta
         end
         if type(isrbxactive) == "function" and not isrbxactive() then wheelDelta = 0 end]=] .. source:sub(wheelFrameEnd + 1)
 source = source:gsub("alive = false\n        if saveAt", "alive = false\n        if wheelConnection then pcall(function() wheelConnection:Disconnect() end) end\n        if saveAt", 1)
