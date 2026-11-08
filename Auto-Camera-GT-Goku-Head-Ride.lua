@@ -621,12 +621,18 @@ end)
 local _, inputService = pcall(function() return game:GetService("UserInputService") end)
 local chatFromShortcut, slashWasDown = false, false
 
+local function robloxTextFocused()
+    local chatOK, chatFocused = pcall(function() return chatConfig.IsFocused end)
+    if chatOK and chatFocused == true then return true end
+    local boxOK, textBox = pcall(function() return inputService:GetFocusedTextBox() end)
+    if boxOK then return not not textBox end
+    if chatOK and chatFocused == false then return false end
+end
+
 local function macroInputAllowed()
     if not robloxFocused() then return false end
-    local chatOK, chatFocused = pcall(function() return chatConfig.IsFocused end)
-    if chatOK and type(chatFocused) == "boolean" then return not chatFocused end
-    local boxOK, textBox = pcall(function() return inputService:GetFocusedTextBox() end)
-    if boxOK then return not textBox end
+    local focused = robloxTextFocused()
+    if focused ~= nil then return not focused end
 
     -- External runtimes may only expose raw keyboard state.
     if type(iskeypressed) ~= "function" then return false end
@@ -715,16 +721,15 @@ local function updateMacroNotice()
     end
     for _,object in ipairs(macroNotice.parts)do object.Visible=visible end
 end
--- Persist the master switch without adding another visible control.
+-- The visible switch and keyboard shortcut share the same saved value.
 local macroSavedState=macrosTab:Toggle({
-    Name="Saved macro state",Default=false,Flag="macro_master_enabled",
+    Name="Macros Enabled",Default=false,Flag="macro_master_enabled",
     Callback=function(on) macrosOn=on end,
 })
-macroSavedState:SetVisible(false)
 macrosOn=macroSavedState.Value==true
 macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mode="Press",Callback=function()
-    if not alive or not macroInputAllowed() then return end
-    macroSavedState:Set(not macrosOn)
+    if not alive or not robloxFocused() or robloxTextFocused() then return end
+    macroSavedState:Set(not macroSavedState.Value)
     macrosOn=macroSavedState.Value==true
     window:Save()
     print("[Macros] "..(macrosOn and "ON" or "OFF"))
