@@ -614,7 +614,7 @@ end
 local macrosTab=window:Tab("Macros")
 local macrosOn=false
 local gojoOn=false
-local aizenOn=true
+local aizenOn=false
 local aizenToggle,gojoToggle,dioToggle
 local dioOn=false
 local macroBusy=false
