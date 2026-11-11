@@ -492,8 +492,9 @@ local macrosTab=window:Tab("Macros")
 local macrosOn=false
 local gojoOn=false
 local aizenOn=true
-local aizenToggle,gojoToggle,dioToggle
+local aizenToggle,gojoToggle,dioToggle,yusukeToggle
 local dioOn=false
+local yusukeOn=false
 local macroBusy=false
 local macroHeldKeys={}
 local macroError
@@ -614,6 +615,10 @@ end
 macrosTab:Section("Aizen Macros")
 aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=true,Flag="macro_use_aizen",Callback=function(on)
     aizenOn=on
+    if on and yusukeOn then
+        yusukeOn=false
+        if yusukeToggle then yusukeToggle:Set(false) end
+    end
     if on and dioOn then
         dioOn=false
         if dioToggle then dioToggle:Set(false) end
@@ -660,6 +665,10 @@ end
 macrosTab:Section("Gojo Macros")
 gojoToggle=macrosTab:Toggle({Name="Use Gojo Macros",Default=false,Flag="macro_use_gojo",Callback=function(on)
     gojoOn=on
+    if on and yusukeOn then
+        yusukeOn=false
+        if yusukeToggle then yusukeToggle:Set(false) end
+    end
     if on and dioOn then
         dioOn=false
         if dioToggle then dioToggle:Set(false) end
@@ -711,22 +720,26 @@ end
 macrosTab:Section("DIO Macros")
 dioToggle=macrosTab:Toggle({Name="Use DIO Macros",Default=false,Flag="macro_use_dio",Callback=function(on)
     dioOn=on
+    if on and yusukeOn then
+        yusukeOn=false
+        if yusukeToggle then yusukeToggle:Set(false) end
+    end
     if on then
         aizenOn=false;gojoOn=false
         if aizenToggle then aizenToggle:Set(false) end
         if gojoToggle then gojoToggle:Set(false) end
     end
 end})
-local function runDioMacro()
-    if not alive or not macrosOn or not dioOn or macroBusy or not macroFocused() then return end
+local function runUptiltMacro(profile, isSelected)
+    if not alive or not macrosOn or not isSelected() or macroBusy or not macroFocused() then return end
     if not macroReady() or type(mouse1press)~="function" or type(mouse1release)~="function" then
-        macroReport("DIO requires mouse1press and mouse1release plus the keyboard macro APIs.")
+        macroReport(profile.." requires mouse1press and mouse1release plus the keyboard macro APIs.")
         return
     end
     macroBusy=true
     task.spawn(function()
         local mouseHeld,spaceHeld=false,false
-        local function active() return alive and macrosOn and dioOn and macroFocused() end
+        local function active() return alive and macrosOn and isSelected() and macroFocused() end
         local ok,err=pcall(function()
             if not active() then return end
             mouseHeld=true;mouse1press()
@@ -747,12 +760,25 @@ local function runDioMacro()
     end)
 end
 macrosTab:Keybind({Name="Uptilt",Default="X",Flag="dio_uptilt_key",Mode="Press",
-    Callback=function() runDioMacro() end})
+    Callback=function() runUptiltMacro("DIO", function() return dioOn end) end})
+
+macrosTab:Section("Yusuke Macros")
+yusukeToggle=macrosTab:Toggle({Name="Use Yusuke Macros",Default=false,Flag="macro_use_yusuke",Callback=function(on)
+    yusukeOn=on
+    if on then
+        aizenToggle:Set(false)
+        gojoToggle:Set(false)
+        dioToggle:Set(false)
+    end
+end})
+macrosTab:Keybind({Name="Uptilt",Default="X",Flag="yusuke_uptilt_key",Mode="Press",
+    Callback=function() runUptiltMacro("Yusuke", function() return yusukeOn end) end})
 
 -- Apply saved selections immediately; Nova also restores their callbacks on its next frame.
 aizenOn=aizenToggle.Value==true
 gojoOn=gojoToggle.Value==true
 dioOn=dioToggle.Value==true
+yusukeOn=yusukeToggle.Value==true
 
 connection=game:GetService("RunService").Heartbeat:Connect(function()
     pcall(updateMacroNotice)
