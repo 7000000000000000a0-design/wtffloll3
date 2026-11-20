@@ -556,7 +556,6 @@ flashTab:Toggle({Name="Auto Camera Timings (all zoom cues)",Flag="auto_camera_ti
     flash={last=nil,minimum=math.huge,descending=false,fired=false}
 end})
 
-flashTab:Paragraph({Title="All camera zoom cues",Content="Handles inward and outward zoom-return cues and repeated prompts, plus GT Goku timeline profiles. Includes moves using the shared camera timing system. Cinematic zooms can also match; individual Shrine and Mahito windows need live verification."})
 
 local kokuTab=tab
 
@@ -1599,7 +1598,7 @@ local function mountMahoragaCounter()
     counterTab:Section("Wheel spin counter")
     local showSelf = counterTab:Toggle({Name="Show my wheel bar", Default=true, Flag="mahoraga_self"})
     local showOthers = counterTab:Toggle({Name="Show other players' spins", Default=true, Flag="mahoraga_others"})
-    local color = counterTab:Colorpicker({Name="Counter color", Default=Color3.fromRGB(255,220,120), Flag="mahoraga_color"})
+    local counterColor = Color3.fromRGB(255,220,120)
     local barColor = counterTab:Colorpicker({Name="Bar colour", Default=Color3.fromRGB(35,255,0), Flag="mahoraga_bar_color"})
     local status = counterTab:Label({Text="Your wheel: waiting for WheelSpins"})
     counterTab:Paragraph({Title="Live wheel value", Content="Reads Character.WheelSpins.Value. Missing values are hidden; the count follows the game when it resets or your character respawns."})
@@ -1772,7 +1771,7 @@ local function mountMahoragaCounter()
                 local drawing = textFor(player)
                 drawing.Text=caption
                 drawing.Position=position
-                drawing.Color=color.Value
+                drawing.Color=counterColor
                 drawing.Visible=true
             end)
         end
