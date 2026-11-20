@@ -1652,24 +1652,30 @@ local function mountMahoragaCounter()
         end
     end
     local function roundedOutline(x,y,w,h)
-        local thickness,r=5,5.5
-        local left,top,right,bottom=x+2.5,y+2.5,x+w-2.5,y+h-2.5
-        local function segment(key,ax,ay,bx,by)
-            local d=barObject("border"..key,"Line",1000)
-            d.From=Vector2.new(ax,ay);d.To=Vector2.new(bx,by)
-            d.Thickness=thickness;d.Color=Color3.fromRGB(30,30,30);d.Visible=true
-        end
-        segment("top",left+r,top,right-r,top)
-        segment("bottom",left+r,bottom,right-r,bottom)
-        segment("left",left,top+r,left,bottom-r)
-        segment("right",right,top+r,right,bottom-r)
-        local corners={{left+r,top+r,180},{right-r,top+r,270},{right-r,bottom-r,0},{left+r,bottom-r,90}}
-        for i,c in ipairs(corners) do
-            for j=0,5 do
-                local a,b=math.rad(c[3]+j*15),math.rad(c[3]+(j+1)*15)
-                segment(i.."_"..j,c[1]+math.cos(a)*r,c[2]+math.sin(a)*r,c[1]+math.cos(b)*r,c[2]+math.sin(b)*r)
+        -- Pixel strips form a continuous hollow frame without line-join spikes.
+        local thickness,r=7,9
+        local innerRadius=r-thickness
+        for row=0,r-1 do
+            local dy=r-row-.5
+            local outer=math.floor(r-math.sqrt(math.max(0,r*r-dy*dy))+.5)
+            local inner=w/2
+            if row>=thickness then
+                local iy=innerRadius-(row-thickness)-.5
+                inner=thickness+innerRadius-math.sqrt(math.max(0,innerRadius*innerRadius-iy*iy))
+            end
+            local edge=math.max(0,math.ceil(inner)-outer)
+            if row<thickness then
+                rectangle("borderTop"..row,x+outer,y+row,w-outer*2,1,45,45,45,1000)
+                rectangle("borderBottom"..row,x+outer,y+h-row-1,w-outer*2,1,45,45,45,1000)
+            else
+                rectangle("borderTL"..row,x+outer,y+row,edge,1,45,45,45,1000)
+                rectangle("borderTR"..row,x+w-outer-edge,y+row,edge,1,45,45,45,1000)
+                rectangle("borderBL"..row,x+outer,y+h-row-1,edge,1,45,45,45,1000)
+                rectangle("borderBR"..row,x+w-outer-edge,y+h-row-1,edge,1,45,45,45,1000)
             end
         end
+        rectangle("borderLeft",x,y+r,thickness,h-r*2,45,45,45,1000)
+        rectangle("borderRight",x+w-thickness,y+r,thickness,h-r*2,45,45,45,1000)
     end
     local function drawBar(camera,count)
         local viewport=camera.ViewportSize
@@ -1683,7 +1689,7 @@ local function mountMahoragaCounter()
         h=math.min(h,math.max(20,viewport.Y-32))
         local w=math.floor(math.max(52,math.min(60,viewport.Y*.04))+.5)
         local x,y=4,math.floor(math.max(8,math.min(viewport.Y*.29,viewport.Y-h-8))+.5)
-        local inset=5
+        local inset=7
         local ix,iy,iw,ih=x+inset,y+inset,w-inset*2,h-inset*2
         local ratio=spins/4
         -- A hollow outline keeps the unfilled area fully see-through.
@@ -1692,10 +1698,12 @@ local function mountMahoragaCounter()
         roundedRectangle("fill",ix,iy+ih-fillHeight,iw,fillHeight,4,tint,1002)
         local dark=Color3.new(tint.R*.12,tint.G*.58,tint.B*.12)
         roundedRectangle("shade",ix+iw-7,iy+ih-fillHeight,7,fillHeight,3,dark,1003)
-        -- Three dashed dividers mark the four 25% sections.
-        for i=1,3 do
-            for j=0,3 do
-                rectangle("tick"..i.."_"..j,ix+j*iw/4,iy+ih*i/4-1.5,iw/8,3,35,35,35,1004)
+        -- Match the reference's nine dividers and long dash / short gap pattern.
+        for i=1,9 do
+            local gap=4
+            local dash=(iw-gap*2)/3
+            for j=0,2 do
+                rectangle("tick"..i.."_"..j,ix+j*(dash+gap),math.floor(iy+ih*i/10-2),dash,4,45,45,45,1004)
             end
         end
         -- Individual lines avoid executor-specific multiline text layout glitches.
