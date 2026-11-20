@@ -1667,7 +1667,7 @@ local function mountMahoragaCounter()
         local ix,iy,iw,ih=x+inset,y+inset,w-inset*2,h-inset*2
         local ratio=spins/4
         roundedRectangle("border",x,y,w,h,8,Color3.fromRGB(30,30,30),1000)
-        roundedRectangle("background",ix,iy,iw,ih,4,Color3.fromRGB(68,74,80),1001)
+        roundedRectangle("background",ix,iy,iw,ih,4,Color3.fromRGB(20,22,26),1001)
         local fillHeight=math.floor(ih*ratio+.5)
         roundedRectangle("fill",ix,iy+ih-fillHeight,iw,fillHeight,4,tint,1002)
         local dark=Color3.new(tint.R*.12,tint.G*.58,tint.B*.12)
@@ -1735,7 +1735,7 @@ local function mountMahoragaCounter()
             status:SetText(statusText)
             lastStatusText = statusText
         end
-        if camera and showSelf.Value and localCount~=nil then
+        if camera and showSelf.Value and localCount~=nil and localCount>=1 then
             local humanoid=localPlayer.Character:FindFirstChildOfClass("Humanoid")
             if not humanoid or humanoid.Health>0 then drawBar(camera,localCount) else hideBar() end
         else
