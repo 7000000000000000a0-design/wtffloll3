@@ -435,6 +435,52 @@ local flashTab=tab
 
 local flash={last=nil,minimum=math.huge,descending=false,fired=false}
 local cameraTimingsOn=false
+-- Shared zoom timing detector. Character names are deliberately not a whitelist:
+-- any move using the shared camera cue is handled, including repeated cues.
+-- This infers an input cue from camera motion; ordinary cinematic zooms may match too.
+local function newCameraTimingDetector()
+    local state
+    local function reset(camera,fov,now)
+        state={camera=camera,last=fov,baseline=fov,extreme=fov,time=now,direction=0,returning=false}
+    end
+    return function(camera,fov,now)
+        if not camera or type(fov)~="number" or fov~=fov or fov<=0 or fov>=180 then
+            state=nil;return false
+        end
+        if not state or state.camera~=camera or now-state.time>.25 or now<state.time then
+            reset(camera,fov,now);return false
+        end
+        local previous=state.last
+        local delta=fov-previous
+        state.last=fov;state.time=now
+        if state.returning then
+            local crossed=(fov-state.baseline)*state.direction<=.25
+            if crossed then reset(camera,fov,now);return false end
+            if delta*state.direction>.005 then
+                -- A new pulse may begin before the preceding cue returns to 70 FOV.
+                state.baseline=previous;state.extreme=fov
+                state.direction=math.abs(delta)>=1.5 and (delta>0 and 1 or -1) or 0
+                state.returning=false
+            end
+            return false
+        end
+        if state.direction==0 then
+            local distance=fov-state.baseline
+            if math.abs(distance)>=1.5 then
+                state.direction=distance>0 and 1 or -1;state.extreme=fov
+            end
+            return false
+        end
+        if (fov-state.extreme)*state.direction>0 then state.extreme=fov end
+        if delta*state.direction<-.0001 and (state.extreme-fov)*state.direction>=.005 then
+            state.returning=true
+            return true
+        end
+        return false
+    end
+end
+local detectCameraTiming=newCameraTimingDetector()
+
 local m1Cooldown,quietAfterNanami=.2,.6
 local lastProfileClick=-math.huge
 
@@ -503,11 +549,14 @@ local function updateGTCamera(cam,now)
 end
 
 -- Shared camera detector, including GT Goku animation-specific zoom cues.
-flashTab:Toggle({Name="Auto Camera Timings",Default=false,Callback=function(on)
+flashTab:Toggle({Name="Auto Camera Timings (all zoom cues)",Flag="auto_camera_timings_all",Default=false,Callback=function(on)
     cameraTimingsOn=on
+    detectCameraTiming=newCameraTimingDetector()
     gtTrackStates=setmetatable({}, {__mode="k"})
     flash={last=nil,minimum=math.huge,descending=false,fired=false}
 end})
+
+flashTab:Paragraph({Title="All camera zoom cues",Content="Handles inward and outward zoom-return cues and repeated prompts, plus GT Goku timeline profiles. Includes moves using the shared camera timing system. Cinematic zooms can also match; individual Shrine and Mahito windows need live verification."})
 
 local kokuTab=tab
 
@@ -533,27 +582,17 @@ local function updateOtherTimings()
         local cam=world.CurrentCamera
         local fov=cam and cam.FieldOfView
         if cam and updateGTCamera(cam,now) then
-            flash={last=nil,minimum=math.huge,descending=false,fired=false}
-        elseif type(fov)=="number" then
-            if flash.last then
-                local delta=fov-flash.last
-                if delta<-.05 then flash.descending=true end
-                flash.minimum=math.min(flash.minimum,fov)
-                -- Reference MYABA uses a downward-FOV latch followed by any upward edge.
-                local endpoint=delta>.0001
-                if flash.descending and endpoint and not flash.fired then
-                    local ready=now-lastProfileClick>=m1Cooldown and now-lastNanamiClick>=quietAfterNanami
-                    if ready and type(mouse1click)=="function" then
-                        mouse1click();flash.fired=true
-                        lastProfileClick=now
-                        
-                        print("[ABA Timings v8] Black Flash zoom click; FOV="..tostring(fov)..", minimum="..tostring(flash.minimum))
-                    end
-                end
+            -- Timeline profiles own their cues; never double-click from FOV motion.
+            detectCameraTiming=newCameraTimingDetector()
+        elseif detectCameraTiming(cam,fov,now) then
+            -- A cue expires on this frame; never send a delayed click into another move.
+            local ready=now-lastProfileClick>=.08 and now-lastNanamiClick>=.08
+            if ready and type(mouse1click)=="function" then
+                mouse1click();lastProfileClick=now
             end
-            if fov>=65 then flash={last=fov,minimum=fov,descending=false,fired=false}
-            else flash.minimum=math.min(flash.minimum,fov);flash.last=fov end
         end
+    else
+        detectCameraTiming=newCameraTimingDetector()
     end
     if kokuOn then
         local player=players.LocalPlayer
