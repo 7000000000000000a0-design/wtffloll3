@@ -1561,14 +1561,16 @@ local function mountMahoragaCounter()
     local showSelf = counterTab:Toggle({Name="Show my wheel bar", Default=true, Flag="mahoraga_self"})
     local showOthers = counterTab:Toggle({Name="Show other players' spins", Default=true, Flag="mahoraga_others"})
     local color = counterTab:Colorpicker({Name="Counter color", Default=Color3.fromRGB(255,220,120), Flag="mahoraga_color"})
+    local barColor = counterTab:Colorpicker({Name="Bar colour", Default=Color3.fromRGB(35,255,0), Flag="mahoraga_bar_color"})
     local status = counterTab:Label({Text="Your wheel: waiting for WheelSpins"})
     counterTab:Paragraph({Title="Live wheel value", Content="Reads Character.WheelSpins.Value. Missing values are hidden; the count follows the game when it resets or your character respawns."})
 
     local drawings, stopped, elapsed = {}, false, 0
     local bar = {}
+    local barSignature, barVisible
     local heartbeat
     local function hide(drawing)
-        if drawing then pcall(function() drawing.Visible=false end) end
+        if drawing then pcall(function() if drawing.Visible then drawing.Visible=false end end) end
     end
     local function barObject(key, kind, layer)
         if bar[key] then return bar[key] end
@@ -1576,7 +1578,8 @@ local function mountMahoragaCounter()
         bar[key]=d
         ownedDrawings[#ownedDrawings+1]=d
         d.Visible=false; d.Transparency=1; d.ZIndex=layer
-        if kind=="Square" then d.Filled=true end
+        if kind=="Square" or kind=="Circle" then d.Filled=true end
+        if kind=="Circle" then d.NumSides=24 end
         return d
     end
     local function rectangle(key,x,y,w,h,r,g,b,layer)
@@ -1586,35 +1589,67 @@ local function mountMahoragaCounter()
         return d
     end
     local function hideBar()
+        if not barVisible then return end
         for _,d in pairs(bar) do hide(d) end
+        barVisible=false
+        barSignature=nil
+    end
+    local function roundedRectangle(key,x,y,w,h,r,color,layer)
+        if w<=0 or h<=0 then
+            for _,suffix in ipairs({"body","middle","tl","tr","bl","br"}) do hide(bar[key..suffix]) end
+            return
+        end
+        r=math.min(r,w/2,h/2)
+        local function square(suffix,px,py,pw,ph)
+            local d=rectangle(key..suffix,px,py,pw,ph,0,0,0,layer)
+            d.Color=color
+        end
+        square("body",x+r,y,w-r*2,h)
+        square("middle",x,y+r,w,h-r*2)
+        local corners={{"tl",x+r,y+r},{"tr",x+w-r,y+r},{"bl",x+r,y+h-r},{"br",x+w-r,y+h-r}}
+        for _,corner in ipairs(corners) do
+            local d=barObject(key..corner[1],"Circle",layer)
+            d.Position=Vector2.new(corner[2],corner[3]); d.Radius=r
+            d.Color=color; d.Visible=true
+        end
     end
     local function drawBar(camera,count)
         local viewport=camera.ViewportSize
-        local h=math.max(120,math.min(640,viewport.Y*.44))
+        local spins=math.max(0,math.min(4,math.floor(count)))
+        local tint=barColor.Value
+        local signature=table.concat({viewport.X,viewport.Y,spins,tint.R,tint.G,tint.B},":")
+        if barVisible and barSignature==signature then return end
+        -- Keep the existing objects on screen; never hide/re-show a healthy bar.
+        barVisible=true
+        local h=math.floor(math.max(120,math.min(640,viewport.Y*.44))+.5)
         h=math.min(h,math.max(20,viewport.Y-32))
-        local w=math.max(48,math.min(60,viewport.Y*.04))
-        local x,y=4,math.max(8,math.min(viewport.Y*.29,viewport.Y-h-8))
+        local w=math.floor(math.max(52,math.min(60,viewport.Y*.04))+.5)
+        local x,y=4,math.floor(math.max(8,math.min(viewport.Y*.29,viewport.Y-h-8))+.5)
         local inset=5
         local ix,iy,iw,ih=x+inset,y+inset,w-inset*2,h-inset*2
-        local spins=math.max(0,math.min(4,math.floor(count)))
         local ratio=spins/4
-        rectangle("border",x,y,w,h,30,30,30,1000)
-        local background=rectangle("background",ix,iy,iw,ih,192,200,210,1001)
-        background.Transparency=.65
-        rectangle("fill",ix,iy+ih*(1-ratio),iw,ih*ratio,255,0,0,1002)
-        rectangle("shade",ix+iw-7,iy+ih*(1-ratio),7,ih*ratio,156,20,48,1003)
+        roundedRectangle("border",x,y,w,h,8,Color3.fromRGB(30,30,30),1000)
+        roundedRectangle("background",ix,iy,iw,ih,4,Color3.fromRGB(68,74,80),1001)
+        local fillHeight=math.floor(ih*ratio+.5)
+        roundedRectangle("fill",ix,iy+ih-fillHeight,iw,fillHeight,4,tint,1002)
+        local dark=Color3.new(tint.R*.12,tint.G*.58,tint.B*.12)
+        roundedRectangle("shade",ix+iw-7,iy+ih-fillHeight,7,fillHeight,3,dark,1003)
         -- Three dashed dividers mark the four 25% sections.
         for i=1,3 do
             for j=0,3 do
                 rectangle("tick"..i.."_"..j,ix+j*iw/4,iy+ih*i/4-1.5,iw/8,3,35,35,35,1004)
             end
         end
-        local label=barObject("label","Text",1005)
-        label.Center=true; label.Outline=true; label.Font=2; label.Size=14
-        label.Color=Color3.fromRGB(255,255,255)
-        label.Text="WHEEL\nSPINS\n\n"..spins.."/4\n"..(spins*25).."%"
-        label.Position=Vector2.new(x+w/2,y+h/2-45)
-        label.Visible=true
+        -- Individual lines avoid executor-specific multiline text layout glitches.
+        local lines={"WHEEL","SPINS",spins.."/4",(spins*25).."%"}
+        for i,text in ipairs(lines) do
+            local label=barObject("label"..i,"Text",1005)
+            label.Center=true; label.Outline=true; label.Font=2; label.Size=14
+            label.Color=Color3.fromRGB(255,255,255); label.Text=text
+            label.Position=Vector2.new(x+w/2,math.floor(y+h/2-38+(i-1)*19))
+            label.Visible=true
+        end
+        barSignature=signature
     end
     local function remove(player)
         local drawing = drawings[player]
@@ -1652,7 +1687,6 @@ local function mountMahoragaCounter()
     end
     local lastStatusText
     local function refresh()
-        hideBar()
         local camera = world.CurrentCamera
         local present = {}
         local localPlayer = Players.LocalPlayer
@@ -1665,7 +1699,9 @@ local function mountMahoragaCounter()
         end
         if camera and showSelf.Value and localCount~=nil then
             local humanoid=localPlayer.Character:FindFirstChildOfClass("Humanoid")
-            if not humanoid or humanoid.Health>0 then drawBar(camera,localCount) end
+            if not humanoid or humanoid.Health>0 then drawBar(camera,localCount) else hideBar() end
+        else
+            hideBar()
         end
         for _,player in ipairs(Players:GetPlayers()) do
             present[player] = true
