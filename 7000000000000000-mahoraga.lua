@@ -1651,6 +1651,26 @@ local function mountMahoragaCounter()
             d.Color=color; d.Visible=true
         end
     end
+    local function roundedOutline(x,y,w,h)
+        local thickness,r=5,5.5
+        local left,top,right,bottom=x+2.5,y+2.5,x+w-2.5,y+h-2.5
+        local function segment(key,ax,ay,bx,by)
+            local d=barObject("border"..key,"Line",1000)
+            d.From=Vector2.new(ax,ay);d.To=Vector2.new(bx,by)
+            d.Thickness=thickness;d.Color=Color3.fromRGB(30,30,30);d.Visible=true
+        end
+        segment("top",left+r,top,right-r,top)
+        segment("bottom",left+r,bottom,right-r,bottom)
+        segment("left",left,top+r,left,bottom-r)
+        segment("right",right,top+r,right,bottom-r)
+        local corners={{left+r,top+r,180},{right-r,top+r,270},{right-r,bottom-r,0},{left+r,bottom-r,90}}
+        for i,c in ipairs(corners) do
+            for j=0,5 do
+                local a,b=math.rad(c[3]+j*15),math.rad(c[3]+(j+1)*15)
+                segment(i.."_"..j,c[1]+math.cos(a)*r,c[2]+math.sin(a)*r,c[1]+math.cos(b)*r,c[2]+math.sin(b)*r)
+            end
+        end
+    end
     local function drawBar(camera,count)
         local viewport=camera.ViewportSize
         local spins=math.max(0,math.min(4,math.floor(count)))
@@ -1666,8 +1686,8 @@ local function mountMahoragaCounter()
         local inset=5
         local ix,iy,iw,ih=x+inset,y+inset,w-inset*2,h-inset*2
         local ratio=spins/4
-        roundedRectangle("border",x,y,w,h,8,Color3.fromRGB(30,30,30),1000)
-        roundedRectangle("background",ix,iy,iw,ih,4,Color3.fromRGB(20,22,26),1001)
+        -- A hollow outline keeps the unfilled area fully see-through.
+        roundedOutline(x,y,w,h)
         local fillHeight=math.floor(ih*ratio+.5)
         roundedRectangle("fill",ix,iy+ih-fillHeight,iw,fillHeight,4,tint,1002)
         local dark=Color3.new(tint.R*.12,tint.G*.58,tint.B*.12)
@@ -1735,7 +1755,7 @@ local function mountMahoragaCounter()
             status:SetText(statusText)
             lastStatusText = statusText
         end
-        if camera and showSelf.Value and localCount~=nil and localCount>=1 then
+        if camera and showSelf.Value and localCount~=nil then
             local humanoid=localPlayer.Character:FindFirstChildOfClass("Humanoid")
             if not humanoid or humanoid.Health>0 then drawBar(camera,localCount) else hideBar() end
         else
