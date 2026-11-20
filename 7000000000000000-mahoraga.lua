@@ -549,7 +549,7 @@ local function updateGTCamera(cam,now)
 end
 
 -- Shared camera detector, including GT Goku animation-specific zoom cues.
-flashTab:Toggle({Name="Auto Camera Timings (all zoom cues)",Flag="auto_camera_timings_all",Default=false,Callback=function(on)
+flashTab:Toggle({Name="Camera Timings",Flag="auto_camera_timings_all",Default=false,Callback=function(on)
     cameraTimingsOn=on
     detectCameraTiming=newCameraTimingDetector()
     gtTrackStates=setmetatable({}, {__mode="k"})
@@ -1600,8 +1600,6 @@ local function mountMahoragaCounter()
     local showOthers = counterTab:Toggle({Name="Show other players' spins", Default=true, Flag="mahoraga_others"})
     local counterColor = Color3.fromRGB(255,220,120)
     local barColor = counterTab:Colorpicker({Name="Bar colour", Default=Color3.fromRGB(35,255,0), Flag="mahoraga_bar_color"})
-    local status = counterTab:Label({Text="Your wheel: waiting for WheelSpins"})
-    counterTab:Paragraph({Title="Live wheel value", Content="Reads Character.WheelSpins.Value. Missing values are hidden; the count follows the game when it resets or your character respawns."})
 
     local drawings, stopped, elapsed = {}, false, 0
     local bar = {}
@@ -1698,12 +1696,12 @@ local function mountMahoragaCounter()
         roundedRectangle("fill",ix,iy+ih-fillHeight,iw,fillHeight,4,tint,1002)
         local dark=Color3.new(tint.R*.12,tint.G*.58,tint.B*.12)
         roundedRectangle("shade",ix+iw-7,iy+ih-fillHeight,7,fillHeight,3,dark,1003)
-        -- Match the reference's nine dividers and long dash / short gap pattern.
-        for i=1,9 do
+        -- Three interior dividers and the frame define four 25% sections.
+        for i=1,3 do
             local gap=4
             local dash=(iw-gap*2)/3
             for j=0,2 do
-                rectangle("tick"..i.."_"..j,ix+j*(dash+gap),math.floor(iy+ih*i/10-2),dash,4,45,45,45,1004)
+                rectangle("tick"..i.."_"..j,ix+j*(dash+gap),math.floor(iy+ih*i/4-2),dash,4,45,45,45,1004)
             end
         end
         -- Individual lines avoid executor-specific multiline text layout glitches.
@@ -1751,18 +1749,12 @@ local function mountMahoragaCounter()
         end
         return nil
     end
-    local lastStatusText
+    local lastCounterError
     local function refresh()
         local camera = world.CurrentCamera
         local present = {}
         local localPlayer = Players.LocalPlayer
         local localCount = localPlayer and spinValue(localPlayer.Character)
-        local statusText = localCount ~= nil and ("Your wheel: "..tostring(localCount).." spins")
-            or "Your wheel: waiting for WheelSpins"
-        if statusText ~= lastStatusText then
-            status:SetText(statusText)
-            lastStatusText = statusText
-        end
         if camera and showSelf.Value and localCount~=nil then
             local humanoid=localPlayer.Character:FindFirstChildOfClass("Humanoid")
             if not humanoid or humanoid.Health>0 then drawBar(camera,localCount) else hideBar() end
@@ -1819,9 +1811,9 @@ local function mountMahoragaCounter()
             hideBar()
             for _,drawing in pairs(drawings) do hide(drawing) end
             local text = "Wheel counter unavailable: "..tostring(err)
-            if text ~= lastStatusText then
-                lastStatusText=text
-                pcall(function() status:SetText(text) end)
+            if text ~= lastCounterError then
+                lastCounterError=text
+                print("[Mahoraga] "..text)
             end
         end
     end)
