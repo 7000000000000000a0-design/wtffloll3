@@ -1558,16 +1558,63 @@ local function mountMahoragaCounter()
     local RunService = game:GetService("RunService")
     local counterTab = window:Tab("Mahoraga")
     counterTab:Section("Wheel spin counter")
-    local showSelf = counterTab:Toggle({Name="Show my spins", Default=true, Flag="mahoraga_self"})
+    local showSelf = counterTab:Toggle({Name="Show my wheel bar", Default=true, Flag="mahoraga_self"})
     local showOthers = counterTab:Toggle({Name="Show other players' spins", Default=true, Flag="mahoraga_others"})
     local color = counterTab:Colorpicker({Name="Counter color", Default=Color3.fromRGB(255,220,120), Flag="mahoraga_color"})
     local status = counterTab:Label({Text="Your wheel: waiting for WheelSpins"})
     counterTab:Paragraph({Title="Live wheel value", Content="Reads Character.WheelSpins.Value. Missing values are hidden; the count follows the game when it resets or your character respawns."})
 
     local drawings, stopped, elapsed = {}, false, 0
+    local bar = {}
     local heartbeat
     local function hide(drawing)
         if drawing then pcall(function() drawing.Visible=false end) end
+    end
+    local function barObject(key, kind, layer)
+        if bar[key] then return bar[key] end
+        local d=Drawing.new(kind)
+        bar[key]=d
+        ownedDrawings[#ownedDrawings+1]=d
+        d.Visible=false; d.Transparency=1; d.ZIndex=layer
+        if kind=="Square" then d.Filled=true end
+        return d
+    end
+    local function rectangle(key,x,y,w,h,r,g,b,layer)
+        local d=barObject(key,"Square",layer)
+        d.Position=Vector2.new(x,y); d.Size=Vector2.new(w,h)
+        d.Color=Color3.fromRGB(r,g,b); d.Visible=w>0 and h>0
+        return d
+    end
+    local function hideBar()
+        for _,d in pairs(bar) do hide(d) end
+    end
+    local function drawBar(camera,count)
+        local viewport=camera.ViewportSize
+        local h=math.max(120,math.min(640,viewport.Y*.44))
+        h=math.min(h,math.max(20,viewport.Y-32))
+        local w=math.max(48,math.min(60,viewport.Y*.04))
+        local x,y=4,math.max(8,math.min(viewport.Y*.29,viewport.Y-h-8))
+        local inset=5
+        local ix,iy,iw,ih=x+inset,y+inset,w-inset*2,h-inset*2
+        local spins=math.max(0,math.min(4,math.floor(count)))
+        local ratio=spins/4
+        rectangle("border",x,y,w,h,30,30,30,1000)
+        local background=rectangle("background",ix,iy,iw,ih,192,200,210,1001)
+        background.Transparency=.65
+        rectangle("fill",ix,iy+ih*(1-ratio),iw,ih*ratio,255,0,0,1002)
+        rectangle("shade",ix+iw-7,iy+ih*(1-ratio),7,ih*ratio,156,20,48,1003)
+        -- Three dashed dividers mark the four 25% sections.
+        for i=1,3 do
+            for j=0,3 do
+                rectangle("tick"..i.."_"..j,ix+j*iw/4,iy+ih*i/4-1.5,iw/8,3,35,35,35,1004)
+            end
+        end
+        local label=barObject("label","Text",1005)
+        label.Center=true; label.Outline=true; label.Font=2; label.Size=14
+        label.Color=Color3.fromRGB(255,255,255)
+        label.Text="WHEEL\nSPINS\n\n"..spins.."/4\n"..(spins*25).."%"
+        label.Position=Vector2.new(x+w/2,y+h/2-45)
+        label.Visible=true
     end
     local function remove(player)
         local drawing = drawings[player]
@@ -1605,6 +1652,7 @@ local function mountMahoragaCounter()
     end
     local lastStatusText
     local function refresh()
+        hideBar()
         local camera = world.CurrentCamera
         local present = {}
         local localPlayer = Players.LocalPlayer
@@ -1615,12 +1663,17 @@ local function mountMahoragaCounter()
             status:SetText(statusText)
             lastStatusText = statusText
         end
+        if camera and showSelf.Value and localCount~=nil then
+            local humanoid=localPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if not humanoid or humanoid.Health>0 then drawBar(camera,localCount) end
+        end
         for _,player in ipairs(Players:GetPlayers()) do
             present[player] = true
             hide(drawings[player])
             -- A player leaving or replacing a character must not break other counters.
             pcall(function()
                 local isSelf = player == localPlayer
+                if isSelf then return end
                 if (isSelf and not showSelf.Value) or (not isSelf and not showOthers.Value) then return end
                 if not camera then return end
                 local character = player.Character
@@ -1661,6 +1714,7 @@ local function mountMahoragaCounter()
         elapsed = 0
         local ok, err = pcall(refresh)
         if not ok then
+            hideBar()
             for _,drawing in pairs(drawings) do hide(drawing) end
             local text = "Wheel counter unavailable: "..tostring(err)
             if text ~= lastStatusText then
@@ -1676,6 +1730,15 @@ local function mountMahoragaCounter()
         local remaining = {}
         for player in pairs(drawings) do remaining[#remaining+1]=player end
         for _,player in ipairs(remaining) do remove(player) end
+        for _,drawing in pairs(bar) do
+            hide(drawing)
+            local ok=pcall(function() drawing:Remove() end)
+            if not ok then pcall(function() drawing:Destroy() end) end
+            for i=#ownedDrawings,1,-1 do
+                if ownedDrawings[i]==drawing then table.remove(ownedDrawings,i); break end
+            end
+        end
+        bar={}
     end
 end
 destroyMahoragaCounter = mountMahoragaCounter()
