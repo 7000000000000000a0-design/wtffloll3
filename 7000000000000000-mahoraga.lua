@@ -1734,7 +1734,48 @@ local function mountPlayerESP()
         end
         return nil
     end
+    local function componentCooldown(move)
+        -- version-2c6fd5e09aaf4cfa: Instance.ComponentMap (+0x38) is a
+        -- vector of {component pointer, type id} entries, each 0x10 bytes.
+        -- Component 9 owns the attributes; its first attribute is at +0x08.
+        -- Verified directly against all four live Hol Horse move instances.
+        if type(memory_read)~="function" then return nil end
+        local ok,result=pcall(function()
+            local address=move.Address
+            if not number(address) or address<4096 then return nil end
+            local map=memory_read("uintptr_t",address+0x38)
+            if not number(map) or map<4096 then return nil end
+            local first,last=memory_read("uintptr_t",map),memory_read("uintptr_t",map+8)
+            if not number(first) or not number(last) or first<4096 or last<first
+                or (last-first)%16~=0 or last-first>16*64 then return nil end
+            for entry=first,last-1,16 do
+                local rawKind=memory_read("int",entry+8)
+                local kind=number(rawKind) and rawKind%65536 or -1
+                if kind==9 then
+                    local component=memory_read("uintptr_t",entry)
+                    if not number(component) or component<4096 then return nil end
+                    local attribute=memory_read("uintptr_t",component+8)
+                    if not number(attribute) or attribute<4096 then return nil end
+                    local key=memory_read("uintptr_t",attribute)
+                    if not number(key) or key<4096 then return nil end
+                    local length=memory_read("int",key+0x10)
+                    local capacity=memory_read("int",key+0x18)
+                    if length~=8 or not number(capacity) or capacity<8 or capacity>256 then return nil end
+                    local text=key
+                    if capacity>=16 then text=memory_read("uintptr_t",key) end
+                    if not number(text) or text<4096 or memory_read("string",text)~="COOLDOWN" then return nil end
+                    local value=memory_read("double",attribute+0x18)
+                    if number(value) and value>=0 and value<=20 then return value end
+                    return nil
+                end
+            end
+        end)
+        if ok then return result end
+        return nil
+    end
     local function readCooldown(move)
+        local direct=componentCooldown(move)
+        if direct~=nil then return direct,"component attribute" end
         local ok,value=pcall(function() return move:GetAttribute("COOLDOWN") end)
         if ok and number(value) then return value,"attribute" end
         local obj=child(move,"COOLDOWN")
@@ -1757,7 +1798,7 @@ local function mountPlayerESP()
     local function trackCooldown(history,key,cd,source,now)
         local state=history[key]
         if not state then state={points={}};history[key]=state end
-        local live=source=="HUD" or source=="attribute" or source=="value" or source=="attribute fallback"
+        local live=source=="HUD" or source=="attribute" or source=="component attribute" or source=="value" or source=="attribute fallback"
         if live and number(cd) then
             if cd>=20 then
                 state.active=false;state.last=20;state.seen=now
@@ -1916,6 +1957,7 @@ local function mountPlayerESP()
             if class=="Configuration" and child(obj,".Config") then
                 local readable,value=pcall(function() return obj:GetAttribute("COOLDOWN") end)
                 line("  COOLDOWN_RAW="..(readable and tostring(value) or ("ERROR: "..tostring(value))))
+                line("  COOLDOWN_COMPONENT="..tostring(componentCooldown(obj)))
                 local cd=readCooldown(obj)
                 line("  COOLDOWN_STATE="..(number(cd) and (cd>=20 and "READY" or "COOLDOWN") or "Unknown").." progress="..tostring(cd))
             end
