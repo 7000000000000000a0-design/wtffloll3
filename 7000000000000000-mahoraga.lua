@@ -1691,6 +1691,30 @@ local function mountPlayerESP()
         end
         return nil
     end
+    local function readCooldown(move)
+        local ok,value=pcall(function() return move:GetAttribute("COOLDOWN") end)
+        if ok and number(value) then return value end
+        -- A ValueBase-backed cooldown can be read even if attributes are unavailable.
+        local obj=child(move,"COOLDOWN")
+        if obj then
+            local success,current=pcall(function() return obj.Value end)
+            if success and number(current) then return current end
+        end
+        -- ABA itself uses (GetAttribute("COOLDOWN") or 20). Absence means ready.
+        -- A failed read is different from an attribute known not to exist.
+        local success,attributes=pcall(function() return move:GetAttributes() end)
+        if success and type(attributes)=="table" then
+            if number(attributes.COOLDOWN) then return attributes.COOLDOWN end
+            local listed=attributes.COOLDOWN~=nil
+            for key,item in pairs(attributes) do
+                if key=="COOLDOWN" or item=="COOLDOWN" then listed=true;break end
+            end
+            if not listed then return 20 end
+            return nil
+        end
+        if ok and value==nil then return 20 end
+        return nil
+    end
     local function readMoves(player,character)
         local moves,seen={},{}
         local function scan(container)
@@ -1701,7 +1725,7 @@ local function mountPlayerESP()
                     seen[move]=true
                     local slot
                     for i=1,5 do if child(config,"Slot"..i) then slot=i;break end end
-                    local cd=numeric(move,"COOLDOWN")
+                    local cd=readCooldown(move)
                     local name=move.Name
                     local rename=child(config,"NewName")
                     if rename then
