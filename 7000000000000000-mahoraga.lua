@@ -1631,11 +1631,32 @@ local function mountPlayerESP()
         local ok,result=pcall(function() return obj.Value end)
         if ok and number(result) then return result end
     end
+    local function constrainedCharge(charge)
+        -- Verified DoubleConstrainedValue layout for Roblox version-2c6fd5e09aaf4cfa:
+        -- MaxValue +0xA0, MinValue +0xA8, Value +0xB0 (Float64).
+        -- Matcha's generic Value offset (+0xA0) can return the maximum as Value.
+        -- Read exactly these fields, never write memory or assume a charge cap.
+        if type(memory_read)~="function" then return nil end
+        local ok,current,minimum,maximum=pcall(function()
+            if charge.ClassName~="DoubleConstrainedValue" then return nil end
+            local address=charge.Address
+            if not number(address) or address<=0 then return nil end
+            return memory_read("double",address+0xB0),memory_read("double",address+0xA8),memory_read("double",address+0xA0)
+        end)
+        if ok and number(current) and number(minimum) and number(maximum)
+            and minimum>=0 and maximum>minimum and maximum<=1000000
+            and current>=minimum and current<=maximum then
+            return (current-minimum)/(maximum-minimum),current,minimum,maximum
+        end
+        return nil
+    end
     local function readMode(player,character)
         -- ABA stores awakening charge on the Player as a constrained value.
         -- Read its actual maximum; do not assume that 100 or 1 means full.
         local charge=child(player,"Charge")
         if charge then
+            local ratio=constrainedCharge(charge)
+            if ratio~=nil then return ratio end
             local ok,current,maximum=pcall(function() return charge.Value,charge.MaxValue end)
             if not ok or not number(maximum) then
                 local valueOk,value=pcall(function() return charge.Value end)
@@ -1724,6 +1745,11 @@ local function mountPlayerESP()
             else line("  GetAttributes returned "..type(attrs)) end
             local success,value=pcall(function() return obj.Value end)
             if success and (type(value)=="number" or type(value)=="boolean") then line("  Value="..tostring(value)) end
+            local ratio,current,minimum,maximum=constrainedCharge(obj)
+            if ratio~=nil then
+                line("  Constrained current="..current.." min="..minimum.." max="..maximum)
+                line(string.format("  ModePercent=%.2f",ratio*100))
+            end
             for _,property in ipairs({"MaxValue","MinValue"}) do
                 local readable,value=pcall(function() return obj[property] end)
                 if readable and type(value)=="number" then line("  "..property.."="..tostring(value)) end
