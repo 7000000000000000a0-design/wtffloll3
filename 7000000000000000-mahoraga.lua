@@ -1601,6 +1601,7 @@ local function mountPlayerESP()
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
     local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
     local records={}
+    local drawingValues={}
     local stopped,elapsed=false,0
     local heartbeat
     local green=Color3.fromRGB(90,245,125)
@@ -1611,7 +1612,9 @@ local function mountPlayerESP()
         return type(value)=="number" and value==value and value>-math.huge and value<math.huge
     end
     local function child(parent,name)
-        return parent and parent:FindFirstChild(name)
+        if not parent then return nil end
+        local ok,result=pcall(function() return parent:FindFirstChild(name) end)
+        if ok then return result end
     end
     local function attribute(parent,name)
         if not parent then return nil end
@@ -1680,7 +1683,9 @@ local function mountPlayerESP()
         return moves
     end
     local function set(d,key,value)
-        if d[key]~=value then d[key]=value end
+        local values=drawingValues[d]
+        if not values then values={};drawingValues[d]=values end
+        if values[key]~=value then d[key]=value;values[key]=value end
     end
     local function hide(record)
         for _,d in pairs(record.drawings) do pcall(function() set(d,"Visible",false) end) end
@@ -1691,8 +1696,25 @@ local function mountPlayerESP()
             local ok=pcall(function() d:Remove() end)
             if not ok then pcall(function() d:Destroy() end) end
             for i=#ownedDrawings,1,-1 do if ownedDrawings[i]==d then table.remove(ownedDrawings,i);break end end
+            drawingValues[d]=nil
         end
         record.drawings={}
+    end
+    local function project(position,camera)
+        -- Matcha exposes WorldToScreen; its result can be Vector2 with no Z.
+        if type(WorldToScreen)=="function" then
+            local ok,point,onScreen=pcall(WorldToScreen,position)
+            if ok and point then
+                if onScreen==nil then
+                    local view=camera.ViewportSize
+                    onScreen=point.X>=0 and point.Y>=0 and point.X<=view.X and point.Y<=view.Y
+                end
+                return point,onScreen
+            end
+        end
+        local ok,point,onScreen=pcall(function() return camera:WorldToViewportPoint(position) end)
+        if ok then return point,onScreen end
+        return nil,false
     end
     local function object(record,key,kind)
         local d=record.drawings[key]
@@ -1725,12 +1747,24 @@ local function mountPlayerESP()
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         local camera=world.CurrentCamera
         if not head or not camera or (humanoid and humanoid.Health<=0) then hide(record);return end
-        if (head.Position-camera.CFrame.Position).Magnitude>range.Value then hide(record);return end
-        local point,visible=camera:WorldToViewportPoint(head.Position+Vector3.new(0,3,0))
-        if not visible or point.Z<=0 then hide(record);return end
+        local okDistance,distance=pcall(function()
+            local origin=child(me and me.Character,"HumanoidRootPart")
+            return (head.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
+        end)
+        if okDistance and number(distance) and distance>range.Value then hide(record);return end
+        local point,visible=project(head.Position+Vector3.new(0,3,0),camera)
+        if not point or not visible then hide(record);return end
+        -- Do not read point.Z: Matcha's Vector2 projections do not expose it.
         if now>=record.nextRead then
-            record.mode=modeOn.Value and readMode(player,character) or nil
-            record.moves=movesOn.Value and readMoves(player,character) or {}
+            record.mode=nil;record.moves={}
+            if modeOn.Value then
+                local success,value=pcall(readMode,player,character)
+                if success then record.mode=value end
+            end
+            if movesOn.Value then
+                local success,value=pcall(readMoves,player,character)
+                if success then record.moves=value end
+            end
             record.nextRead=now+.2
         end
         record.used={}
@@ -1775,8 +1809,15 @@ local function mountPlayerESP()
                 present[player]=true
                 local record=records[player]
                 if not record then record={drawings={},nextRead=0,moves={}};records[player]=record end
-                local success=pcall(updatePlayer,player,record,now)
-                if not success then hide(record) end
+                local success,err=pcall(updatePlayer,player,record,now)
+                if not success then
+                    hide(record)
+                    local message=tostring(err)
+                    if record.lastError~=message then
+                        record.lastError=message
+                        print("[ESP] "..tostring(player.Name)..": "..message)
+                    end
+                else record.lastError=nil end
             end
         end
         local removed={}
