@@ -1821,6 +1821,10 @@ local function mountPlayerESP()
             -- Verified against Ultimate2.Bar: normal stage /300; FullPower /225.
             local damage=child(character,"DamageDone")
             if damage then
+                -- Some characters (including Jogo) expose a constrained damage
+                -- meter with its own actual limits, unlike GT Goku's NumberValue.
+                local ratio=constrainedCharge(damage)
+                if ratio~=nil then return ratio end
                 local ok,value=pcall(function() return damage.Value end)
                 if ok and number(value) and value>=0 then
                     local maximum=numeric(damage,"MaxValue") or numeric(damage,"Max")
