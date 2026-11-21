@@ -1744,7 +1744,7 @@ local function mountPlayerESP()
     local function readMode(player,character,secondary)
         -- ABA stores awakening charge on the Player as a constrained value.
         -- Read its actual maximum; do not assume that 100 or 1 means full.
-        local names=secondary and {"IndraArrowBar","SecondBar","Charge2","SecondCharge","SecondaryCharge","SecondModeCharge","SecondModeBar","SecondaryBar","ModeBar2","Mode2","SecondMode","Awakening2","Ultimate2"} or {"Charge"}
+        local names=secondary and {"RagnaBar","IndraArrowBar","SecondBar","Charge2","SecondCharge","SecondaryCharge","SecondModeCharge","SecondModeBar","SecondaryBar","ModeBar2","Mode2","SecondMode","Awakening2","Ultimate2"} or {"Charge"}
         local sources={player,character,child(player,"Stats"),child(player,"PlayerData"),child(character,"Stats")}
         for i=1,5 do
             local candidates={}
@@ -2154,6 +2154,7 @@ local function mountPlayerESP()
                 end
                 inspect(child(player,"Charge"),"Player/Charge",1)
                 inspect(child(player,"SecondBar"),"Player/SecondBar",1)
+                inspect(child(player,"RagnaBar"),"Player/RagnaBar",1)
                 inspect(child(player.Character,"IndraArrowBar"),"Character/IndraArrowBar",1)
                 -- Capture moves before optional metadata so other-player cooldowns
                 -- cannot be pushed out by body parts, sounds, and attachments.
