@@ -1630,6 +1630,72 @@ local function mountPlayerESP()
         local ok,result=pcall(function() return parent:FindFirstChild(name) end)
         if ok then return result end
     end
+    local function componentCooldown(move,attributeName,readString)
+        -- version-2c6fd5e09aaf4cfa: Instance.ComponentMap (+0x38) is a
+        -- vector of {component pointer, type id} entries, each 0x10 bytes.
+        -- Component 9 owns either one attribute (+0x08) or a counted attribute
+        -- array (count +0x08, capacity +0x0C, data +0x18). Both layouts verified live.
+        if type(memory_read)~="function" then return nil end
+        attributeName=attributeName or "COOLDOWN"
+        local ok,result=pcall(function()
+            local address=move.Address
+            if not number(address) or address<4096 then return nil end
+            local map=memory_read("uintptr_t",address+0x38)
+            if not number(map) or map<4096 then return nil end
+            local first,last=memory_read("uintptr_t",map),memory_read("uintptr_t",map+8)
+            if not number(first) or not number(last) or first<4096 or last<first
+                or (last-first)%16~=0 or last-first>16*64 then return nil end
+            for entry=first,last-1,16 do
+                local rawKind=memory_read("int",entry+8)
+                local kind=number(rawKind) and rawKind%65536 or -1
+                if kind==9 then
+                    local component=memory_read("uintptr_t",entry)
+                    if not number(component) or component<4096 then return nil end
+                    local layout=memory_read("int",component)
+                    local count,data=1,memory_read("uintptr_t",component+8)
+                    if layout==1 then
+                        count=memory_read("int",component+8)
+                        local capacity=memory_read("int",component+12)
+                        if not number(count) or not number(capacity) or count<0 or count>128 or capacity<count or capacity>512 then return nil end
+                        data=memory_read("uintptr_t",component+0x18)
+                    elseif layout~=0 then return nil end
+                    if not number(data) or data<4096 then return nil end
+                    for index=0,count-1 do
+                        local attribute=data+index*0x58
+                        local key=memory_read("uintptr_t",attribute)
+                        if not number(key) or key<4096 then return nil end
+                        local length=memory_read("int",key+0x10)
+                        if length==#attributeName then
+                            local capacity=memory_read("int",key+0x18)
+                            if number(capacity) and capacity>=8 and capacity<=256 then
+                                local text=key
+                                if capacity>=16 then text=memory_read("uintptr_t",key) end
+                                if number(text) and text>=4096 and memory_read("string",text)==attributeName then
+                                    if readString then
+                                        local address=attribute+0x18
+                                        local size=memory_read("int",address+0x10)
+                                        local cap=memory_read("int",address+0x18)
+                                        if not number(size) or not number(cap) or size<1 or size>100 or cap<size or cap>256 then return nil end
+                                        local dataAddress=cap>=16 and memory_read("uintptr_t",address) or address
+                                        if not number(dataAddress) or dataAddress<4096 then return nil end
+                                        local text=memory_read("string",dataAddress)
+                                        if type(text)=="string" and #text==size then return text end
+                                        return nil
+                                    end
+                                    local value=memory_read("double",attribute+0x18)
+                                    if number(value) and value>=0 and value<=20 then return value end
+                                    return nil
+                                end
+                            end
+                        end
+                    end
+                    return nil
+                end
+            end
+        end)
+        if ok then return result end
+        return nil
+    end
     local function attribute(parent,name)
         if not parent then return nil end
         local ok,value=pcall(function() return parent:GetAttribute(name) end)
@@ -1713,6 +1779,26 @@ local function mountPlayerESP()
                 end
             end
         end
+        if secondary then
+            -- GT Goku's extra awakening uses replicated damage, not Charge2.
+            -- Verified against Ultimate2.Bar: normal stage /300; FullPower /225.
+            local damage=child(character,"DamageDone")
+            if damage then
+                local ok,value=pcall(function() return damage.Value end)
+                if ok and number(value) and value>=0 then
+                    local maximum=numeric(damage,"MaxValue") or numeric(damage,"Max")
+                        or numeric(character,"MaxDamageDone")
+                    local name=componentCooldown(player,"LastLoadedChar",true)
+                        or attribute(player,"LastLoadedChar") or attribute(character,"SpawnChar")
+                        or attribute(character,"LastLoadedChar")
+                    if not number(maximum) and name=="Goku [GT]" then
+                        local sidebar=componentCooldown(damage,"Sidebar",true) or attribute(damage,"Sidebar")
+                        maximum=sidebar=="FullPower" and 225 or 300
+                    end
+                    if number(maximum) and maximum>0 then return math.min(1,value/maximum) end
+                end
+            end
+        end
         return nil
     end
     local function hudCooldown(player,slot,name)
@@ -1742,61 +1828,6 @@ local function mountPlayerESP()
             local fraction=math.abs(height)/rowHeight
             if fraction>=0 and fraction<=1.001 then return math.max(0,math.min(20,(1-fraction)*20)) end
         end
-        return nil
-    end
-    local function componentCooldown(move,attributeName)
-        -- version-2c6fd5e09aaf4cfa: Instance.ComponentMap (+0x38) is a
-        -- vector of {component pointer, type id} entries, each 0x10 bytes.
-        -- Component 9 owns either one attribute (+0x08) or a counted attribute
-        -- array (count +0x08, capacity +0x0C, data +0x18). Both layouts verified live.
-        if type(memory_read)~="function" then return nil end
-        attributeName=attributeName or "COOLDOWN"
-        local ok,result=pcall(function()
-            local address=move.Address
-            if not number(address) or address<4096 then return nil end
-            local map=memory_read("uintptr_t",address+0x38)
-            if not number(map) or map<4096 then return nil end
-            local first,last=memory_read("uintptr_t",map),memory_read("uintptr_t",map+8)
-            if not number(first) or not number(last) or first<4096 or last<first
-                or (last-first)%16~=0 or last-first>16*64 then return nil end
-            for entry=first,last-1,16 do
-                local rawKind=memory_read("int",entry+8)
-                local kind=number(rawKind) and rawKind%65536 or -1
-                if kind==9 then
-                    local component=memory_read("uintptr_t",entry)
-                    if not number(component) or component<4096 then return nil end
-                    local layout=memory_read("int",component)
-                    local count,data=1,memory_read("uintptr_t",component+8)
-                    if layout==1 then
-                        count=memory_read("int",component+8)
-                        local capacity=memory_read("int",component+12)
-                        if not number(count) or not number(capacity) or count<0 or count>128 or capacity<count or capacity>512 then return nil end
-                        data=memory_read("uintptr_t",component+0x18)
-                    elseif layout~=0 then return nil end
-                    if not number(data) or data<4096 then return nil end
-                    for index=0,count-1 do
-                        local attribute=data+index*0x58
-                        local key=memory_read("uintptr_t",attribute)
-                        if not number(key) or key<4096 then return nil end
-                        local length=memory_read("int",key+0x10)
-                        if length==#attributeName then
-                            local capacity=memory_read("int",key+0x18)
-                            if number(capacity) and capacity>=8 and capacity<=256 then
-                                local text=key
-                                if capacity>=16 then text=memory_read("uintptr_t",key) end
-                                if number(text) and text>=4096 and memory_read("string",text)==attributeName then
-                                    local value=memory_read("double",attribute+0x18)
-                                    if number(value) and value>=0 and value<=20 then return value end
-                                    return nil
-                                end
-                            end
-                        end
-                    end
-                    return nil
-                end
-            end
-        end)
-        if ok then return result end
         return nil
     end
     local function readCooldown(move)
@@ -2077,6 +2108,13 @@ local function mountPlayerESP()
                 local rows=readMoves(player,player.Character,records[playerKey(player)],tick and tick() or os.clock())
                 for _,move in ipairs(rows) do
                     line("MOVE "..tostring(move.slot).." "..move.name.." progress="..tostring(move.cd).." source="..move.source)
+                end
+                local second=readMode(player,player.Character,true)
+                if second~=nil then line(string.format("SECOND_MODE=%.2f%%",second*100)) end
+                local damage=child(player.Character,"DamageDone")
+                if damage then
+                    line("SECOND_SIDEBAR="..tostring(componentCooldown(damage,"Sidebar",true) or attribute(damage,"Sidebar")))
+                    inspect(damage,"Character/DamageDone",0)
                 end
                 inspect(child(player,"Charge"),"Player/Charge",1)
                 -- Capture moves before optional metadata so other-player cooldowns
