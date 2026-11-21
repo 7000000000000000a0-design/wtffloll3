@@ -1619,7 +1619,9 @@ local function mountPlayerESP()
     local function attribute(parent,name)
         if not parent then return nil end
         local ok,value=pcall(function() return parent:GetAttribute(name) end)
-        if ok then return value end
+        if ok and value~=nil then return value end
+        local success,attributes=pcall(function() return parent:GetAttributes() end)
+        if success and type(attributes)=="table" and attributes[name]~=nil then return attributes[name] end
     end
     local function numeric(parent,name)
         local value=attribute(parent,name)
@@ -1630,6 +1632,20 @@ local function mountPlayerESP()
         if ok and number(result) then return result end
     end
     local function readMode(player,character)
+        -- ABA stores awakening charge on the Player as a constrained value.
+        -- Read its actual maximum; do not assume that 100 or 1 means full.
+        local charge=child(player,"Charge")
+        if charge then
+            local ok,current,maximum=pcall(function() return charge.Value,charge.MaxValue end)
+            if not ok or not number(maximum) then
+                local valueOk,value=pcall(function() return charge.Value end)
+                current=valueOk and value or nil
+                maximum=numeric(charge,"MaxValue") or numeric(player,"MaxCharge")
+            end
+            if number(current) and number(maximum) and maximum>0 and current>=0 and current<=maximum then
+                return current/maximum
+            end
+        end
         local containers={}
         local function add(obj) if obj then containers[#containers+1]=obj end end
         add(character);add(player);add(child(player,"Stats"));add(child(player,"PlayerData"))
@@ -1664,7 +1680,7 @@ local function mountPlayerESP()
                     seen[move]=true
                     local slot
                     for i=1,5 do if child(config,"Slot"..i) then slot=i;break end end
-                    local cd=attribute(move,"COOLDOWN")
+                    local cd=numeric(move,"COOLDOWN")
                     local name=move.Name
                     local rename=child(config,"NewName")
                     if rename then
@@ -1682,6 +1698,77 @@ local function mountPlayerESP()
         end)
         return moves
     end
+    espTab:Button({Name="Inspect ESP data",Callback=function()
+        local lines={"ABA ESP data report v1"}
+        local function line(text) if #lines<240 then lines[#lines+1]=tostring(text) end end
+        local function inspect(obj,path,depth)
+            if not obj or #lines>=240 then return end
+            local class="?"
+            pcall(function() class=obj.ClassName end)
+            line(path.." ["..tostring(class).."]")
+            local ok,attrs=pcall(function() return obj:GetAttributes() end)
+            if not ok then line("  GetAttributes ERROR: "..tostring(attrs))
+            elseif type(attrs)=="table" then
+                local keys={}
+                for k,v in pairs(attrs) do
+                    if type(k)=="string" then keys[#keys+1]=k
+                    elseif type(v)=="string" then keys[#keys+1]=v end
+                end
+                table.sort(keys)
+                for _,key in ipairs(keys) do
+                    local success,value=pcall(function() return obj:GetAttribute(key) end)
+                    if success and value~=nil then line("  @"..key.."="..tostring(value))
+                    elseif type(attrs[key])=="number" or type(attrs[key])=="boolean" then line("  @"..key.."="..tostring(attrs[key]))
+                    else line("  @"..key.." unreadable"..(not success and (": "..tostring(value)) or "")) end
+                end
+            else line("  GetAttributes returned "..type(attrs)) end
+            local success,value=pcall(function() return obj.Value end)
+            if success and (type(value)=="number" or type(value)=="boolean") then line("  Value="..tostring(value)) end
+            for _,property in ipairs({"MaxValue","MinValue"}) do
+                local readable,value=pcall(function() return obj[property] end)
+                if readable and type(value)=="number" then line("  "..property.."="..tostring(value)) end
+            end
+            if depth<=0 then return end
+            local success,children=pcall(function() return obj:GetChildren() end)
+            if not success then line("  GetChildren ERROR: "..tostring(children));return end
+            for _,item in ipairs(children) do
+                local name=tostring(item.Name)
+                local low=name:lower()
+                local relevant=low:find("mode",1,true) or low:find("awak",1,true) or low:find("charge",1,true)
+                    or low:find("cool",1,true) or low=="stats" or low=="playerdata" or low==".config"
+                local config=child(item,".Config")
+                local valueObject=false
+                pcall(function() valueObject=item:IsA("ValueBase") end)
+                if relevant or config or valueObject or path:find("Backpack",1,true) then
+                    inspect(item,path.."/"..name,depth-1)
+                end
+            end
+        end
+        local ok,err=pcall(function()
+            local list=Players:GetPlayers()
+            local ordered={}
+            if Players.LocalPlayer then ordered[#ordered+1]=Players.LocalPlayer end
+            for _,player in ipairs(list) do if player~=Players.LocalPlayer and #ordered<3 then ordered[#ordered+1]=player end end
+            for _,player in ipairs(ordered) do
+                line("--- "..tostring(player.Name)..(player==Players.LocalPlayer and " (SELF)" or " (OTHER)").." ---")
+                inspect(player,"Player",0)
+                inspect(child(player,"Charge"),"Player/Charge",1)
+                inspect(player.Character,"Character",3)
+                inspect(child(player,"Backpack"),"Backpack",3)
+                inspect(child(player,"Stats"),"Player/Stats",2)
+                inspect(child(player,"PlayerData"),"Player/PlayerData",2)
+            end
+        end)
+        if not ok then line("REPORT ERROR: "..tostring(err)) end
+        local report=table.concat(lines,"\n")
+        local copied=false
+        if type(setclipboard)=="function" then copied=pcall(setclipboard,report) end
+        if not copied and type(toclipboard)=="function" then copied=pcall(toclipboard,report) end
+        local saved=false
+        if type(writefile)=="function" then saved=pcall(writefile,"aba-esp-data.txt",report) end
+        print(report)
+        pcall(function() window:Notify({Title="ESP data report",Content=copied and "Report copied. Paste it into this chat." or saved and "Saved aba-esp-data.txt in the Matcha workspace. Send that file here." or "Report printed in Matcha output. Copy it into this chat."}) end)
+    end})
     local function set(d,key,value)
         local values=drawingValues[d]
         if not values then values={};drawingValues[d]=values end
@@ -1774,7 +1861,7 @@ local function mountPlayerESP()
         label(record,"name",tostring(player.DisplayName or player.Name),x,y,white);y=y+18
         if modeOn.Value then
             local ratio=record.mode
-            label(record,"mode",ratio and ("Mode: "..math.floor(ratio*100+.5).."%") or "Mode: Unknown",x,y,ratio and green or gray)
+            label(record,"mode",ratio and string.format("Mode: %.2f%%",ratio*100) or "Mode: Unknown",x,y,ratio and green or gray)
             y=y+18
             square(record,"modeOutline",x,y,160,10,Color3.fromRGB(25,25,30))
             square(record,"modeBackground",x+2,y+2,156,6,Color3.fromRGB(65,65,75))
