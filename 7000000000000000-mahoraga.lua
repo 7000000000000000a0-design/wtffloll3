@@ -1733,11 +1733,36 @@ local function mountPlayerESP()
     local function readMode(player,character,secondary)
         -- ABA stores awakening charge on the Player as a constrained value.
         -- Read its actual maximum; do not assume that 100 or 1 means full.
-        local names=secondary and {"Charge2","SecondCharge","SecondModeCharge","Mode2","SecondMode","Awakening2"} or {"Charge"}
+        local names=secondary and {"SecondBar","Charge2","SecondCharge","SecondaryCharge","SecondModeCharge","SecondModeBar","SecondaryBar","ModeBar2","Mode2","SecondMode","Awakening2","Ultimate2"} or {"Charge"}
         local sources={player,character,child(player,"Stats"),child(player,"PlayerData"),child(character,"Stats")}
         for i=1,5 do
+            local candidates={}
             for _,name in ipairs(names) do
-                local charge=child(sources[i],name)
+                local meter=child(sources[i],name)
+                if meter then candidates[#candidates+1]=meter end
+            end
+            if secondary and sources[i] then
+                -- Discover shared secondary meters without a character whitelist.
+                -- Require both a secondary name and a meter name to avoid health,
+                -- souls, kill counters, and other unrelated constrained values.
+                local ok,children=pcall(function() return sources[i]:GetChildren() end)
+                if ok and type(children)=="table" and #children<=256 then
+                    for _,meter in ipairs(children) do
+                        local low=tostring(meter.Name):lower()
+                        local second=low:find("second",1,true) or low:match("2$")
+                        local bar=low:find("bar",1,true) or low:find("charge",1,true)
+                            or low:find("mode",1,true) or low:find("awak",1,true) or low:find("ultimate",1,true)
+                        if second and bar then
+                            local found=false
+                            for _,candidate in ipairs(candidates) do
+                                if characterKey(candidate)==characterKey(meter) then found=true;break end
+                            end
+                            if not found then candidates[#candidates+1]=meter end
+                        end
+                    end
+                end
+            end
+            for _,charge in ipairs(candidates) do
                 if charge then
                     local ratio=constrainedCharge(charge)
                     if ratio~=nil then return ratio end
@@ -2117,6 +2142,7 @@ local function mountPlayerESP()
                     inspect(damage,"Character/DamageDone",0)
                 end
                 inspect(child(player,"Charge"),"Player/Charge",1)
+                inspect(child(player,"SecondBar"),"Player/SecondBar",1)
                 -- Capture moves before optional metadata so other-player cooldowns
                 -- cannot be pushed out by body parts, sounds, and attachments.
                 inspect(child(player,"Backpack"),"Backpack",3)
