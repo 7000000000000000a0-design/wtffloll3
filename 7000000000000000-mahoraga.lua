@@ -1606,6 +1606,7 @@ local function mountPlayerESP()
     local records={}
     local drawingValues={}
     local stopped,elapsed=false,0
+    local capture
     local heartbeat
     local green=Color3.fromRGB(90,245,125)
     local red=Color3.fromRGB(255,110,110)
@@ -1829,6 +1830,80 @@ local function mountPlayerESP()
             return a.name<b.name
         end)
         return moves
+    end
+    local function notify(title,text)
+        pcall(function() window:Notify({Title=title,Content=text}) end)
+    end
+    espTab:Button({Name="Record cooldowns (20 seconds)",Callback=function()
+        local now=tick and tick() or os.clock()
+        capture={start=now,finish=now+20,last={},lines={"ABA cooldown timeline v1"},headers={}}
+        notify("Cooldown recording","Recording for 20 seconds. Have the other player use moves 1, 2, 3, and 4. The report will be copied when finished.")
+    end})
+    local function captureTick(list,now)
+        if not capture then return end
+        local job=capture
+        local function line(text) if #job.lines<1400 then job.lines[#job.lines+1]=text end end
+        for _,player in ipairs(list) do
+            local key=playerKey(player)
+            local rows=readMoves(player,player.Character)
+            local using=child(player.Character,"UsingSkill")
+            local skill="none"
+            if using then pcall(function() skill=tostring(using.Value) end) end
+            local parts={"skill="..skill,"character="..tostring(characterKey(player.Character))}
+            local record=records[key]
+            for _,move in ipairs(rows) do
+                local displayed="not rendered"
+                for _,shown in ipairs(record and record.moves or {}) do
+                    if shown.slot==move.slot and shown.name==move.name then
+                        displayed=tostring(shown.cd).."/"..shown.source;break
+                    end
+                end
+                parts[#parts+1]=tostring(move.slot)..":"..move.name.."="..tostring(move.cd).."/"..move.source.." display="..displayed
+            end
+            local state=table.concat(parts,"; ")
+            local changed=job.last[key]~=state
+            if changed then
+                job.last[key]=state
+                line(string.format("%.2fs %s%s %s",now-job.start,key,key==playerKey(Players.LocalPlayer) and " SELF" or " OTHER",state))
+            end
+            if changed then
+                local pack=child(player,"Backpack")
+                local ok,children=pcall(function() return pack and pack:GetChildren() or {} end)
+                if ok then
+                    for _,move in ipairs(children) do
+                        if child(move,".Config") then
+                            local ok,address=pcall(function() return move.Address end)
+                            if ok and number(address) and address>0 and type(memory_read)=="function" then
+                                local success,header=pcall(function()
+                                    local container=memory_read("uintptr_t",address+0x48)
+                                    if not number(container) or container<4096 then return "no storage" end
+                                    local values={}
+                                    for offset=0,0x30,8 do values[#values+1]=string.format("+%X=%s",offset,tostring(memory_read("uintptr_t",container+offset))) end
+                                    return table.concat(values," ")
+                                end)
+                                local storageKey=key.."/"..tostring(move.Name)
+                                local text=success and header or "unreadable"
+                                if job.headers[storageKey]~=text then
+                                    job.headers[storageKey]=text
+                                    line("STORAGE "..storageKey.." "..text)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if now>=job.finish then
+            capture=nil
+            local report=table.concat(job.lines,"\n")
+            local copied=false
+            if type(setclipboard)=="function" then copied=pcall(setclipboard,report) end
+            if not copied and type(toclipboard)=="function" then copied=pcall(toclipboard,report) end
+            local saved=false
+            if type(writefile)=="function" then saved=pcall(writefile,"aba-cooldown-timeline.txt",report) end
+            print(report)
+            notify("Cooldown recording finished",copied and "Report copied. Paste it into this chat." or saved and "Saved aba-cooldown-timeline.txt in the Matcha workspace." or "Report printed in Matcha output.")
+        end
     end
     espTab:Button({Name="Inspect ESP data",Callback=function()
         local lines={"ABA ESP data report v3 (independent move timers)"}
@@ -2060,6 +2135,14 @@ local function mountPlayerESP()
                 else record.lastError=nil end
             end
         end
+        if capture then
+            local success,err=pcall(captureTick,list,now)
+            if not success then
+                capture=nil
+                print("[ESP recording] "..tostring(err))
+                notify("Cooldown recording failed","See Matcha output for the recording error.")
+            end
+        end
         local removed={}
         for player in pairs(records) do if not present[player] then removed[#removed+1]=player end end
         for _,player in ipairs(removed) do release(records[player]);records[player]=nil end
@@ -2067,6 +2150,7 @@ local function mountPlayerESP()
     return function()
         if stopped then return end
         stopped=true
+        capture=nil
         if heartbeat then pcall(function() heartbeat:Disconnect() end) end
         for _,record in pairs(records) do release(record) end
         records={}
