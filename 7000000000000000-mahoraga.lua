@@ -1723,9 +1723,45 @@ local function mountPlayerESP()
         end
         return nil
     end
+    local function boundedCooldown(move)
+        if type(memory_read)~="function" then return nil end
+        local ok,value=pcall(function()
+            local address=move.Address
+            if not number(address) or address<4096 then return nil end
+            local container=memory_read("uintptr_t",address+0x48)
+            if not number(container) or container<4096 then return nil end
+            local first=memory_read("uintptr_t",container+0x18)
+            local last=memory_read("uintptr_t",container+0x20)
+            if not number(first) or not number(last) or first<4096 or last<first then return nil end
+            local bytes=last-first
+            -- Read only the actual vector extent. Unbounded walks can leak into
+            -- adjacent instances and report duplicate/unrelated sound attributes.
+            if bytes%0x58~=0 or bytes>64*0x58 then return nil end
+            for entry=first,last-1,0x58 do
+                local nameAddress=memory_read("uintptr_t",entry)
+                if not number(nameAddress) or nameAddress<4096 then return nil end
+                local capacity=memory_read("int",nameAddress+0x18)
+                if not number(capacity) or capacity<0 or capacity>256 then return nil end
+                local textAddress=nameAddress
+                if capacity>=16 then textAddress=memory_read("uintptr_t",nameAddress) end
+                if not number(textAddress) or textAddress<4096 then return nil end
+                if memory_read("string",textAddress)=="COOLDOWN" then
+                    local progress=memory_read("double",entry+0x18)
+                    if number(progress) and progress>=0 and progress<=20
+                        and math.abs(progress-math.floor(progress+.5))<.000001 then return progress end
+                    return nil
+                end
+            end
+            return nil
+        end)
+        if ok then return value end
+        return nil
+    end
     local function readCooldown(move,allowAbsent)
         local ok,value=pcall(function() return move:GetAttribute("COOLDOWN") end)
         if ok and number(value) then return value end
+        local direct=boundedCooldown(move)
+        if direct~=nil then return direct end
         -- A ValueBase-backed cooldown can be read even if attributes are unavailable.
         local obj=child(move,"COOLDOWN")
         if obj then
@@ -1789,6 +1825,7 @@ local function mountPlayerESP()
             if class=="Configuration" and child(obj,".Config") then
                 local readable,value=pcall(function() return obj:GetAttribute("COOLDOWN") end)
                 line("  COOLDOWN_RAW="..(readable and tostring(value) or ("ERROR: "..tostring(value))))
+                line("  COOLDOWN_BOUNDED="..tostring(boundedCooldown(obj)))
                 local cd=readCooldown(obj)
                 line("  COOLDOWN_STATE="..(number(cd) and (cd>=20 and "READY" or "COOLDOWN") or "Unknown").." progress="..tostring(cd))
             end
