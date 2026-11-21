@@ -405,7 +405,7 @@ local players=game:GetService("Players")
 local world=game:GetService("Workspace")
 local armedUntil=0
 local lastKeys={}
-local positionOffset
+local positionOffset,guiSizeOffset
 -- Matcha's screen coordinates can be unreliable on rotated BillboardGui bars.
 -- The reference script reads the UDim2 X.Scale float instead; never write memory.
 if type(memory_read) == "function" then
@@ -418,6 +418,9 @@ if type(memory_read) == "function" then
     local value=ok and data and data.Offsets and data.Offsets.GuiObject and data.Offsets.GuiObject.Position
     if type(value)=="string" then value=tonumber(value) end
     if type(value)=="number" and value>0 and value<8192 and value%4==0 then positionOffset=value end
+    local sizeValue=ok and data and data.Offsets and data.Offsets.GuiObject and data.Offsets.GuiObject.Size
+    if type(sizeValue)=="string" then sizeValue=tonumber(sizeValue) end
+    if type(sizeValue)=="number" and sizeValue>0 and sizeValue<8192 and sizeValue%4==0 then guiSizeOffset=sizeValue end
 end
 local function readRatio(bar,cutter)
     local ok,value=pcall(function()return cutter.Position.X.Scale end)
@@ -1691,7 +1694,36 @@ local function mountPlayerESP()
         end
         return nil
     end
-    local function readCooldown(move)
+    local function hudCooldown(player,slot,name)
+        if not slot then return nil end
+        -- Only inspect THIS player's GUI. Never substitute the local player's HUD
+        -- for another player's hidden data.
+        local rows=child(child(child(player,"PlayerGui"),"HUD"),"Moves")
+        local row=child(rows,tostring(slot))
+        local cd=child(row,"CD")
+        if not cd then return nil end
+        local display=child(row,"TextLabel")
+        local ok,title=pcall(function() return display and display.Text end)
+        if ok and type(title)=="string" and title~="" and title~=name then return nil end
+        local function progress(scale)
+            if number(scale) and scale>=-1.001 and scale<=.001 then
+                return math.max(0,math.min(20,(1+scale)*20))
+            end
+        end
+        local ok,scale=pcall(function() return cd.Size.Y.Scale end)
+        if ok then local value=progress(scale);if value~=nil then return value end end
+        if guiSizeOffset and type(memory_read)=="function" then
+            local success,value=pcall(function() return memory_read("float",cd.Address+guiSizeOffset+8) end)
+            if success then local result=progress(value);if result~=nil then return result end end
+        end
+        local success,height,rowHeight=pcall(function() return cd.AbsoluteSize.Y,row.AbsoluteSize.Y end)
+        if success and number(height) and number(rowHeight) and rowHeight>0 then
+            local fraction=math.abs(height)/rowHeight
+            if fraction>=0 and fraction<=1.001 then return math.max(0,math.min(20,(1-fraction)*20)) end
+        end
+        return nil
+    end
+    local function readCooldown(move,allowAbsent)
         local ok,value=pcall(function() return move:GetAttribute("COOLDOWN") end)
         if ok and number(value) then return value end
         -- A ValueBase-backed cooldown can be read even if attributes are unavailable.
@@ -1709,10 +1741,10 @@ local function mountPlayerESP()
             for key,item in pairs(attributes) do
                 if key=="COOLDOWN" or item=="COOLDOWN" then listed=true;break end
             end
-            if not listed then return 20 end
+            if not listed and allowAbsent then return 20 end
             return nil
         end
-        if ok and value==nil then return 20 end
+        if ok and value==nil and allowAbsent then return 20 end
         return nil
     end
     local function readMoves(player,character)
@@ -1725,14 +1757,17 @@ local function mountPlayerESP()
                     seen[move]=true
                     local slot
                     for i=1,5 do if child(config,"Slot"..i) then slot=i;break end end
-                    local cd=readCooldown(move)
                     local name=move.Name
                     local rename=child(config,"NewName")
                     if rename then
                         local ok,value=pcall(function() return rename.Value end)
                         if ok and type(value)=="string" and value~="" then name=value end
                     end
-                    moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil}
+                    local cd=hudCooldown(player,slot,tostring(name))
+                    local source=cd~=nil and "HUD" or "attribute"
+                    if cd==nil then cd=readCooldown(move,player==Players.LocalPlayer) end
+                    if cd==nil then source="unavailable" end
+                    moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,source=source}
                 end
             end
         end
@@ -1810,6 +1845,10 @@ local function mountPlayerESP()
             for _,player in ipairs(list) do if player~=Players.LocalPlayer and #ordered<3 then ordered[#ordered+1]=player end end
             for _,player in ipairs(ordered) do
                 line("--- "..tostring(player.Name)..(player==Players.LocalPlayer and " (SELF)" or " (OTHER)").." ---")
+                local rows=readMoves(player,player.Character)
+                for _,move in ipairs(rows) do
+                    line("MOVE "..tostring(move.slot).." "..move.name.." progress="..tostring(move.cd).." source="..move.source)
+                end
                 inspect(child(player,"Charge"),"Player/Charge",1)
                 -- Capture moves before optional metadata so other-player cooldowns
                 -- cannot be pushed out by body parts, sounds, and attachments.
