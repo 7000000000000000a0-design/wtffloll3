@@ -1744,13 +1744,19 @@ local function mountPlayerESP()
         return moves
     end
     espTab:Button({Name="Inspect ESP data",Callback=function()
-        local lines={"ABA ESP data report v1"}
+        local lines={"ABA ESP data report v2"}
         local function line(text) if #lines<240 then lines[#lines+1]=tostring(text) end end
         local function inspect(obj,path,depth)
             if not obj or #lines>=240 then return end
             local class="?"
             pcall(function() class=obj.ClassName end)
             line(path.." ["..tostring(class).."]")
+            if class=="Configuration" and child(obj,".Config") then
+                local readable,value=pcall(function() return obj:GetAttribute("COOLDOWN") end)
+                line("  COOLDOWN_RAW="..(readable and tostring(value) or ("ERROR: "..tostring(value))))
+                local cd=readCooldown(obj)
+                line("  COOLDOWN_STATE="..(number(cd) and (cd>=20 and "READY" or "COOLDOWN") or "Unknown").." progress="..tostring(cd))
+            end
             local ok,attrs=pcall(function() return obj:GetAttributes() end)
             if not ok then line("  GetAttributes ERROR: "..tostring(attrs))
             elseif type(attrs)=="table" then
@@ -1788,7 +1794,10 @@ local function mountPlayerESP()
                     or low:find("cool",1,true) or low=="stats" or low=="playerdata" or low==".config"
                 local config=child(item,".Config")
                 local valueObject=false
-                pcall(function() valueObject=item:IsA("ValueBase") end)
+                pcall(function()
+                    local classes={NumberValue=true,IntValue=true,DoubleConstrainedValue=true,IntConstrainedValue=true,FloatValue=true,BoolValue=true,StringValue=true}
+                    valueObject=classes[item.ClassName]==true
+                end)
                 if relevant or config or valueObject or path:find("Backpack",1,true) then
                     inspect(item,path.."/"..name,depth-1)
                 end
@@ -1801,12 +1810,11 @@ local function mountPlayerESP()
             for _,player in ipairs(list) do if player~=Players.LocalPlayer and #ordered<3 then ordered[#ordered+1]=player end end
             for _,player in ipairs(ordered) do
                 line("--- "..tostring(player.Name)..(player==Players.LocalPlayer and " (SELF)" or " (OTHER)").." ---")
-                inspect(player,"Player",0)
                 inspect(child(player,"Charge"),"Player/Charge",1)
-                inspect(player.Character,"Character",3)
+                -- Capture moves before optional metadata so other-player cooldowns
+                -- cannot be pushed out by body parts, sounds, and attachments.
                 inspect(child(player,"Backpack"),"Backpack",3)
-                inspect(child(player,"Stats"),"Player/Stats",2)
-                inspect(child(player,"PlayerData"),"Player/PlayerData",2)
+                inspect(player.Character,"Character",0)
             end
         end)
         if not ok then line("REPORT ERROR: "..tostring(err)) end
