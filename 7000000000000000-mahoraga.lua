@@ -1601,6 +1601,7 @@ local function mountPlayerESP()
     local espTab=window:Tab("ESP")
     local modeOn=espTab:Toggle({Name="Mode bar ESP",Default=true,Flag="player_mode_esp"})
     local movesOn=espTab:Toggle({Name="Move cooldown ESP",Default=true,Flag="player_move_esp"})
+    local selfOn=espTab:Toggle({Name="Show yourself",Default=false,Flag="player_esp_show_self"})
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
     local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
     local records={}
@@ -2235,7 +2236,7 @@ local function mountPlayerESP()
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
-        if teamFilter.Value and me and me.Team~=nil and player.Team==me.Team then hide(record);return end
+        if teamFilter.Value and me and playerKey(player)~=playerKey(me) and me.Team~=nil and player.Team==me.Team then hide(record);return end
         local head=child(character,"Head") or child(character,"HumanoidRootPart")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         local camera=world.CurrentCamera
@@ -2310,7 +2311,7 @@ local function mountPlayerESP()
         if not ok then for _,record in pairs(records) do hide(record) end;return end
         for _,player in ipairs(list) do
             local identity=playerKey(player)
-            if identity~=playerKey(Players.LocalPlayer) then
+            if identity~=playerKey(Players.LocalPlayer) or selfOn.Value then
                 present[identity]=true
                 local record=records[identity]
                 if not record then record={drawings={},nextRead=0,moves={}};records[identity]=record end
