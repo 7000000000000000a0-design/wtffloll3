@@ -368,6 +368,7 @@ local prompts = {}
 local connection, lastStatus, lastError
 local destroyHeadRide
 local destroyMahoragaCounter
+local destroyPlayerESP
 
 local function message(text)
     if text ~= lastStatus then lastStatus=text;  end
@@ -382,6 +383,7 @@ state = {}
 function state.Destroy()
     if not alive then return end
     alive=false; enabled=false
+    if destroyPlayerESP then pcall(destroyPlayerESP) end
     if destroyMahoragaCounter then pcall(destroyMahoragaCounter) end
     if destroyHeadRide then pcall(destroyHeadRide) end
     if connection then pcall(function()connection:Disconnect()end);connection=nil end
@@ -1589,6 +1591,208 @@ local function mountHeadRide()
     end
 end
 destroyHeadRide = mountHeadRide()
+
+local function mountPlayerESP()
+    local Players=game:GetService("Players")
+    local RunService=game:GetService("RunService")
+    local espTab=window:Tab("ESP")
+    local modeOn=espTab:Toggle({Name="Mode bar ESP",Default=true,Flag="player_mode_esp"})
+    local movesOn=espTab:Toggle({Name="Move cooldown ESP",Default=true,Flag="player_move_esp"})
+    local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
+    local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
+    local records={}
+    local stopped,elapsed=false,0
+    local heartbeat
+    local green=Color3.fromRGB(90,245,125)
+    local red=Color3.fromRGB(255,110,110)
+    local gray=Color3.fromRGB(185,185,195)
+    local white=Color3.fromRGB(245,245,250)
+    local function number(value)
+        return type(value)=="number" and value==value and value>-math.huge and value<math.huge
+    end
+    local function child(parent,name)
+        return parent and parent:FindFirstChild(name)
+    end
+    local function attribute(parent,name)
+        if not parent then return nil end
+        local ok,value=pcall(function() return parent:GetAttribute(name) end)
+        if ok then return value end
+    end
+    local function numeric(parent,name)
+        local value=attribute(parent,name)
+        if number(value) then return value end
+        local obj=child(parent,name)
+        if not obj then return nil end
+        local ok,result=pcall(function() return obj.Value end)
+        if ok and number(result) then return result end
+    end
+    local function readMode(player,character)
+        local containers={}
+        local function add(obj) if obj then containers[#containers+1]=obj end end
+        add(character);add(player);add(child(player,"Stats"));add(child(player,"PlayerData"))
+        add(child(character,"Stats"))
+        for _,obj in ipairs(containers) do
+            for _,key in ipairs({"ModePercent","ModePercentage","AwakeningPercent"}) do
+                local value=numeric(obj,key)
+                if number(value) and value>=0 and value<=100 then return value/100 end
+            end
+            for _,key in ipairs({"ModeRatio","AwakeningRatio"}) do
+                local value=numeric(obj,key)
+                if number(value) and value>=0 and value<=1 then return value end
+            end
+            for _,pair in ipairs({{"Mode","MaxMode"},{"Mode","ModeMax"},{"ModeCharge","MaxModeCharge"},{"Awakening","MaxAwakening"}}) do
+                local value,maximum=numeric(obj,pair[1]),numeric(obj,pair[2])
+                local meter=child(obj,pair[1])
+                if not number(maximum) and meter then maximum=attribute(meter,"MaxValue") or attribute(meter,"Max") end
+                if number(value) and number(maximum) and maximum>0 and value>=0 and value<=maximum then
+                    return value/maximum
+                end
+            end
+        end
+        return nil
+    end
+    local function readMoves(player,character)
+        local moves,seen={},{}
+        local function scan(container)
+            if not container then return end
+            for _,move in ipairs(container:GetChildren()) do
+                local config=child(move,".Config")
+                if config and move:IsA("Configuration") and not seen[move] then
+                    seen[move]=true
+                    local slot
+                    for i=1,5 do if child(config,"Slot"..i) then slot=i;break end end
+                    local cd=attribute(move,"COOLDOWN")
+                    local name=move.Name
+                    local rename=child(config,"NewName")
+                    if rename then
+                        local ok,value=pcall(function() return rename.Value end)
+                        if ok and type(value)=="string" and value~="" then name=value end
+                    end
+                    moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil}
+                end
+            end
+        end
+        scan(child(player,"Backpack"));scan(character)
+        table.sort(moves,function(a,b)
+            if (a.slot or 99)~=(b.slot or 99) then return (a.slot or 99)<(b.slot or 99) end
+            return a.name<b.name
+        end)
+        return moves
+    end
+    local function set(d,key,value)
+        if d[key]~=value then d[key]=value end
+    end
+    local function hide(record)
+        for _,d in pairs(record.drawings) do pcall(function() set(d,"Visible",false) end) end
+    end
+    local function release(record)
+        hide(record)
+        for _,d in pairs(record.drawings) do
+            local ok=pcall(function() d:Remove() end)
+            if not ok then pcall(function() d:Destroy() end) end
+            for i=#ownedDrawings,1,-1 do if ownedDrawings[i]==d then table.remove(ownedDrawings,i);break end end
+        end
+        record.drawings={}
+    end
+    local function object(record,key,kind)
+        local d=record.drawings[key]
+        if d then return d end
+        d=Drawing.new(kind);record.drawings[key]=d;ownedDrawings[#ownedDrawings+1]=d
+        d.Visible=false;d.Transparency=1;d.ZIndex=900
+        if kind=="Text" then d.Size=14;d.Font=2;d.Center=false;d.Outline=true
+        else d.Filled=true end
+        return d
+    end
+    local function label(record,key,text,x,y,color)
+        local d=object(record,key,"Text")
+        set(d,"Text",text);set(d,"Position",Vector2.new(x,y));set(d,"Color",color);set(d,"Visible",true)
+        record.used[key]=true
+    end
+    local function square(record,key,x,y,w,h,color)
+        local d=object(record,key,"Square")
+        set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
+        record.used[key]=true
+    end
+    local function updatePlayer(player,record,now)
+        local character=player.Character
+        if record.character~=character then
+            hide(record);record.character=character;record.nextRead=0;record.mode=nil;record.moves={}
+        end
+        if not modeOn.Value and not movesOn.Value then hide(record);return end
+        local me=Players.LocalPlayer
+        if teamFilter.Value and me and me.Team~=nil and player.Team==me.Team then hide(record);return end
+        local head=child(character,"Head") or child(character,"HumanoidRootPart")
+        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        local camera=world.CurrentCamera
+        if not head or not camera or (humanoid and humanoid.Health<=0) then hide(record);return end
+        if (head.Position-camera.CFrame.Position).Magnitude>range.Value then hide(record);return end
+        local point,visible=camera:WorldToViewportPoint(head.Position+Vector3.new(0,3,0))
+        if not visible or point.Z<=0 then hide(record);return end
+        if now>=record.nextRead then
+            record.mode=modeOn.Value and readMode(player,character) or nil
+            record.moves=movesOn.Value and readMoves(player,character) or {}
+            record.nextRead=now+.2
+        end
+        record.used={}
+        local height=18+(modeOn.Value and 34 or 0)+(movesOn.Value and math.max(1,#record.moves)*16 or 0)
+        local x=math.max(4,math.min(point.X-160,camera.ViewportSize.X-324))
+        local y=math.max(4,math.min(point.Y-height,camera.ViewportSize.Y-height-4))
+        label(record,"name",tostring(player.DisplayName or player.Name),x,y,white);y=y+18
+        if modeOn.Value then
+            local ratio=record.mode
+            label(record,"mode",ratio and ("Mode: "..math.floor(ratio*100+.5).."%") or "Mode: Unknown",x,y,ratio and green or gray)
+            y=y+18
+            square(record,"modeOutline",x,y,160,10,Color3.fromRGB(25,25,30))
+            square(record,"modeBackground",x+2,y+2,156,6,Color3.fromRGB(65,65,75))
+            if ratio then square(record,"modeFill",x+2,y+2,156*ratio,6,green) end
+            y=y+16
+        end
+        if movesOn.Value then
+            if #record.moves==0 then label(record,"unknownMoves","Moves: Unknown",x,y,gray) end
+            for i,move in ipairs(record.moves) do
+                local value=move.cd
+                local ready=number(value) and value>=20
+                local state=not number(value) and "Unknown" or ready and "READY" or ("COOLDOWN "..math.floor(math.max(0,math.min(20,value))*5+.5).."%")
+                local name=move.name
+                if #name>26 then name=name:sub(1,23).."..." end
+                label(record,"move"..i,(move.slot and move.slot..". " or "")..name.." | "..state,x,y,not number(value) and gray or ready and green or red)
+                y=y+16
+            end
+        end
+        for key,d in pairs(record.drawings) do if not record.used[key] then set(d,"Visible",false) end end
+    end
+    heartbeat=RunService.Heartbeat:Connect(function(dt)
+        if stopped or not alive then return end
+        elapsed=elapsed+(tonumber(dt) or .05)
+        if elapsed<.05 then return end
+        elapsed=0
+        local now=tick and tick() or os.clock()
+        local present={}
+        local ok,list=pcall(function() return Players:GetPlayers() end)
+        if not ok then for _,record in pairs(records) do hide(record) end;return end
+        for _,player in ipairs(list) do
+            if player~=Players.LocalPlayer then
+                present[player]=true
+                local record=records[player]
+                if not record then record={drawings={},nextRead=0,moves={}};records[player]=record end
+                local success=pcall(updatePlayer,player,record,now)
+                if not success then hide(record) end
+            end
+        end
+        local removed={}
+        for player in pairs(records) do if not present[player] then removed[#removed+1]=player end end
+        for _,player in ipairs(removed) do release(records[player]);records[player]=nil end
+    end)
+    return function()
+        if stopped then return end
+        stopped=true
+        if heartbeat then pcall(function() heartbeat:Disconnect() end) end
+        for _,record in pairs(records) do release(record) end
+        records={}
+    end
+end
+destroyPlayerESP=mountPlayerESP()
+
 
 -- Reads the same replicated value as aba.rbxl's built-in spin GUI.
 local function mountMahoragaCounter()
