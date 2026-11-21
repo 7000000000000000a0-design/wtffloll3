@@ -2236,6 +2236,48 @@ local function mountPlayerESP()
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
     end
+    local function bodyBounds(character,head,camera)
+        -- Project the head and feet so the lines follow the rig and camera zoom.
+        -- Only inspect body parts: accessories and effects must not stretch bars.
+        local headHalf=.5
+        pcall(function() headHalf=head.Size.Y/2 end)
+        local top=project(head.Position+Vector3.new(0,headHalf+.15,0),camera)
+        if not top or not number(top.X) or not number(top.Y) then return nil end
+        local bottom
+        for _,name in ipairs({"LeftFoot","RightFoot","Left Leg","Right Leg"}) do
+            local foot=child(character,name)
+            if foot then
+                local half=1
+                pcall(function() half=foot.Size.Y/2 end)
+                local point=project(foot.Position-Vector3.new(0,half,0),camera)
+                if point and number(point.Y) and (not bottom or point.Y>bottom.Y) then bottom=point end
+            end
+        end
+        if not bottom then bottom=project(head.Position-Vector3.new(0,5,0),camera) end
+        if not bottom or not number(bottom.Y) then return nil end
+        local height=bottom.Y-top.Y
+        if height<3 or height>camera.ViewportSize.Y*4 then return nil end
+        local center=top.X
+        local left,right=center-height*.32,center+height*.32
+        for _,name in ipairs({"HumanoidRootPart","Torso","UpperTorso","Left Arm","Right Arm","LeftUpperArm","RightUpperArm"}) do
+            local part=child(character,name)
+            if part then
+                local point=project(part.Position,camera)
+                if point and number(point.X) then
+                    left=math.min(left,point.X-height*.12)
+                    right=math.max(right,point.X+height*.12)
+                end
+            end
+        end
+        return left,right,top.Y,height
+    end
+    local function verticalMeter(record,key,ratio,x,top,height,color)
+        square(record,key.."Outline",x-1,top-1,4,height+2,Color3.fromRGB(15,15,18))
+        if ratio~=nil then
+            local fill=height*math.max(0,math.min(1,ratio))
+            square(record,key.."Fill",x,top+height-fill,2,fill,color)
+        end
+    end
     local function updatePlayer(player,record,now)
         local character=player.Character
         local identity=characterKey(character)
@@ -2272,7 +2314,7 @@ local function mountPlayerESP()
             record.nextRead=now+.05
         end
         record.used={}
-        local height=18+(modeOn.Value and (34+(record.mode2~=nil and 34 or 0)) or 0)+(movesOn.Value and math.max(1,#record.moves)*16 or 0)
+        local height=18+(modeOn.Value and (18+(record.mode2~=nil and 18 or 0)) or 0)+(movesOn.Value and math.max(1,#record.moves)*16 or 0)
         local x=math.max(4,math.min(point.X-160,camera.ViewportSize.X-324))
         local y=math.max(4,math.min(point.Y-height,camera.ViewportSize.Y-height-4))
         label(record,"name",tostring(player.DisplayName or player.Name),x,y,white);y=y+18
@@ -2280,16 +2322,15 @@ local function mountPlayerESP()
             local ratio=record.mode
             label(record,"mode",ratio and string.format("Mode: %.2f%%",ratio*100) or "Mode: Unknown",x,y,ratio and green or gray)
             y=y+18
-            square(record,"modeOutline",x,y,160,10,Color3.fromRGB(25,25,30))
-            square(record,"modeBackground",x+2,y+2,156,6,Color3.fromRGB(65,65,75))
-            if ratio then square(record,"modeFill",x+2,y+2,156*ratio,6,modeRed) end
-            y=y+16
             if record.mode2~=nil then
-                local second=record.mode2
-                label(record,"mode2",string.format("Second Mode: %.2f%%",second*100),x,y,green);y=y+18
-                square(record,"mode2Outline",x,y,160,10,Color3.fromRGB(25,25,30))
-                square(record,"mode2Background",x+2,y+2,156,6,Color3.fromRGB(65,65,75))
-                square(record,"mode2Fill",x+2,y+2,156*second,6,secondPurple);y=y+16
+                label(record,"mode2",string.format("Second Mode: %.2f%%",record.mode2*100),x,y,green);y=y+18
+            end
+            local left,right,top,bodyHeight=bodyBounds(character,head,camera)
+            if left then
+                verticalMeter(record,"mode",ratio,left-5,top,bodyHeight,modeRed)
+                if record.mode2~=nil then
+                    verticalMeter(record,"mode2",record.mode2,right+3,top,bodyHeight,secondPurple)
+                end
             end
         end
         if movesOn.Value then
