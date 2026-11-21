@@ -1614,6 +1614,16 @@ local function mountPlayerESP()
     local function number(value)
         return type(value)=="number" and value==value and value>-math.huge and value<math.huge
     end
+    local function playerKey(player)
+        if not player then return "none" end
+        return tostring(player.Name)
+    end
+    local function characterKey(character)
+        if not character then return nil end
+        local ok,address=pcall(function() return character.Address end)
+        if ok and number(address) and address>0 then return address end
+        return character
+    end
     local function child(parent,name)
         if not parent then return nil end
         local ok,result=pcall(function() return parent:FindFirstChild(name) end)
@@ -1743,8 +1753,48 @@ local function mountPlayerESP()
         end
         return nil,"read failed"
     end
-    local function readMoves(player,character)
+    local function trackCooldown(history,key,cd,source,now)
+        local state=history[key]
+        if not state then state={points={}};history[key]=state end
+        local live=source=="HUD" or source=="attribute" or source=="value" or source=="attribute fallback"
+        if live and number(cd) then
+            if cd>=20 then
+                state.active=false;state.last=20;state.seen=now
+                return cd,source
+            end
+            if not state.active or (state.last and cd<state.last-.5) then
+                state.points={};state.active=true
+            end
+            local points=state.points
+            if #points==0 or cd~=points[#points].cd then
+                points[#points+1]={cd=cd,time=now}
+                if #points>16 then table.remove(points,1) end
+                if #points>=2 then
+                    local first,last=points[1],points[#points]
+                    local delta=last.time-first.time
+                    if delta>=.025 and last.cd>first.cd then
+                        local rate=(last.cd-first.cd)/delta
+                        if rate>.01 and rate<=400 then state.rate=rate end
+                    end
+                end
+            end
+            state.last=cd;state.seen=now
+            return cd,source
+        end
+        -- Missing data is not a completion event for a previously observed cooldown.
+        -- Keep independent move histories; never reset all moves when one changes.
+        if state.active and state.last and state.seen then
+            if state.rate then
+                return math.min(20,state.last+math.max(0,now-state.seen)*state.rate),"estimated"
+            end
+            return state.last,"last observed"
+        end
+        return cd,source
+    end
+    local function readMoves(player,character,record,now)
         local moves,seen={},{}
+        if record then record.cooldowns=record.cooldowns or {} end
+        local present={}
         local function scan(container)
             if not container then return end
             for _,move in ipairs(container:GetChildren()) do
@@ -1763,11 +1813,17 @@ local function mountPlayerESP()
                     local source=cd~=nil and "HUD" or "attribute"
                     if cd==nil then cd,source=readCooldown(move) end
                     if cd==nil then source="unavailable" end
+                    local key=tostring(slot or "?")..":"..tostring(name)
+                    present[key]=true
+                    if record then cd,source=trackCooldown(record.cooldowns,key,cd,source,now) end
                     moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,source=source}
                 end
             end
         end
         scan(child(player,"Backpack"));scan(character)
+        if record then
+            for key in pairs(record.cooldowns) do if not present[key] then record.cooldowns[key]=nil end end
+        end
         table.sort(moves,function(a,b)
             if (a.slot or 99)~=(b.slot or 99) then return (a.slot or 99)<(b.slot or 99) end
             return a.name<b.name
@@ -1775,7 +1831,7 @@ local function mountPlayerESP()
         return moves
     end
     espTab:Button({Name="Inspect ESP data",Callback=function()
-        local lines={"ABA ESP data report v2"}
+        local lines={"ABA ESP data report v3 (independent move timers)"}
         local function line(text) if #lines<240 then lines[#lines+1]=tostring(text) end end
         local function inspect(obj,path,depth)
             if not obj or #lines>=240 then return end
@@ -1841,7 +1897,7 @@ local function mountPlayerESP()
             for _,player in ipairs(list) do if player~=Players.LocalPlayer and #ordered<3 then ordered[#ordered+1]=player end end
             for _,player in ipairs(ordered) do
                 line("--- "..tostring(player.Name)..(player==Players.LocalPlayer and " (SELF)" or " (OTHER)").." ---")
-                local rows=readMoves(player,player.Character)
+                local rows=readMoves(player,player.Character,records[playerKey(player)],tick and tick() or os.clock())
                 for _,move in ipairs(rows) do
                     line("MOVE "..tostring(move.slot).." "..move.name.." progress="..tostring(move.cd).." source="..move.source)
                 end
@@ -1917,8 +1973,9 @@ local function mountPlayerESP()
     end
     local function updatePlayer(player,record,now)
         local character=player.Character
-        if record.character~=character then
-            hide(record);record.character=character;record.nextRead=0;record.mode=nil;record.moves={}
+        local identity=characterKey(character)
+        if record.character~=identity then
+            hide(record);record.character=identity;record.nextRead=0;record.mode=nil;record.moves={};record.cooldowns={}
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -1942,7 +1999,7 @@ local function mountPlayerESP()
                 if success then record.mode=value end
             end
             if movesOn.Value then
-                local success,value=pcall(readMoves,player,character)
+                local success,value=pcall(readMoves,player,character,record,now)
                 if success then record.moves=value end
             end
             record.nextRead=now+.05
@@ -1967,6 +2024,8 @@ local function mountPlayerESP()
                 local value=move.cd
                 local ready=number(value) and value>=20
                 local state=not number(value) and "Unknown" or ready and "READY" or ("COOLDOWN "..math.floor(math.max(0,math.min(20,value))*5+.5).."%")
+                if move.source=="estimated" then state=state.." EST" end
+                if move.source=="last observed" then state=state.." LAST" end
                 local name=move.name
                 if #name>26 then name=name:sub(1,23).."..." end
                 label(record,"move"..i,(move.slot and move.slot..". " or "")..name.." | "..state,x,y,not number(value) and gray or ready and green or red)
@@ -1985,10 +2044,11 @@ local function mountPlayerESP()
         local ok,list=pcall(function() return Players:GetPlayers() end)
         if not ok then for _,record in pairs(records) do hide(record) end;return end
         for _,player in ipairs(list) do
-            if player~=Players.LocalPlayer then
-                present[player]=true
-                local record=records[player]
-                if not record then record={drawings={},nextRead=0,moves={}};records[player]=record end
+            local identity=playerKey(player)
+            if identity~=playerKey(Players.LocalPlayer) then
+                present[identity]=true
+                local record=records[identity]
+                if not record then record={drawings={},nextRead=0,moves={}};records[identity]=record end
                 local success,err=pcall(updatePlayer,player,record,now)
                 if not success then
                     hide(record)
