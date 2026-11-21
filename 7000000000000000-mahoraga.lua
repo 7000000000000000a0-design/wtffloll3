@@ -1609,6 +1609,8 @@ local function mountPlayerESP()
     local capture
     local heartbeat
     local green=Color3.fromRGB(90,245,125)
+    local modeRed=Color3.fromRGB(235,65,65)
+    local secondPurple=Color3.fromRGB(170,85,255)
     local red=Color3.fromRGB(255,110,110)
     local gray=Color3.fromRGB(185,185,195)
     local white=Color3.fromRGB(245,245,250)
@@ -1712,16 +1714,25 @@ local function mountPlayerESP()
         if ok and number(result) then return result end
     end
     local function constrainedCharge(charge)
-        -- Verified DoubleConstrainedValue layout for Roblox version-2c6fd5e09aaf4cfa:
-        -- MaxValue +0xA0, MinValue +0xA8, Value +0xB0 (Float64).
+        -- Verified constrained-value layout for Roblox version-2c6fd5e09aaf4cfa:
+        -- MaxValue +0xA0, MinValue +0xA8, Value +0xB0.
+        -- DoubleConstrainedValue uses Float64; IntConstrainedValue uses integers.
         -- Matcha's generic Value offset (+0xA0) can return the maximum as Value.
         -- Read exactly these fields, never write memory or assume a charge cap.
         if type(memory_read)~="function" then return nil end
         local ok,current,minimum,maximum=pcall(function()
-            if charge.ClassName~="DoubleConstrainedValue" then return nil end
+            local class=charge.ClassName
+            if class~="DoubleConstrainedValue" and class~="IntConstrainedValue" then return nil end
             local address=charge.Address
             if not number(address) or address<=0 then return nil end
-            return memory_read("double",address+0xB0),memory_read("double",address+0xA8),memory_read("double",address+0xA0)
+            local kind=class=="IntConstrainedValue" and "int" or "double"
+            if kind=="int" then
+                -- These nonnegative meter values must fit the bounded low word.
+                for _,offset in ipairs({0xA4,0xAC,0xB4}) do
+                    if memory_read("int",address+offset)~=0 then return nil end
+                end
+            end
+            return memory_read(kind,address+0xB0),memory_read(kind,address+0xA8),memory_read(kind,address+0xA0)
         end)
         if ok and number(current) and number(minimum) and number(maximum)
             and minimum>=0 and maximum>minimum and maximum<=1000000
@@ -1733,7 +1744,7 @@ local function mountPlayerESP()
     local function readMode(player,character,secondary)
         -- ABA stores awakening charge on the Player as a constrained value.
         -- Read its actual maximum; do not assume that 100 or 1 means full.
-        local names=secondary and {"SecondBar","Charge2","SecondCharge","SecondaryCharge","SecondModeCharge","SecondModeBar","SecondaryBar","ModeBar2","Mode2","SecondMode","Awakening2","Ultimate2"} or {"Charge"}
+        local names=secondary and {"IndraArrowBar","SecondBar","Charge2","SecondCharge","SecondaryCharge","SecondModeCharge","SecondModeBar","SecondaryBar","ModeBar2","Mode2","SecondMode","Awakening2","Ultimate2"} or {"Charge"}
         local sources={player,character,child(player,"Stats"),child(player,"PlayerData"),child(character,"Stats")}
         for i=1,5 do
             local candidates={}
@@ -2143,6 +2154,7 @@ local function mountPlayerESP()
                 end
                 inspect(child(player,"Charge"),"Player/Charge",1)
                 inspect(child(player,"SecondBar"),"Player/SecondBar",1)
+                inspect(child(player.Character,"IndraArrowBar"),"Character/IndraArrowBar",1)
                 -- Capture moves before optional metadata so other-player cooldowns
                 -- cannot be pushed out by body parts, sounds, and attachments.
                 inspect(child(player,"Backpack"),"Backpack",3)
@@ -2258,14 +2270,14 @@ local function mountPlayerESP()
             y=y+18
             square(record,"modeOutline",x,y,160,10,Color3.fromRGB(25,25,30))
             square(record,"modeBackground",x+2,y+2,156,6,Color3.fromRGB(65,65,75))
-            if ratio then square(record,"modeFill",x+2,y+2,156*ratio,6,green) end
+            if ratio then square(record,"modeFill",x+2,y+2,156*ratio,6,modeRed) end
             y=y+16
             if record.mode2~=nil then
                 local second=record.mode2
                 label(record,"mode2",string.format("Second Mode: %.2f%%",second*100),x,y,green);y=y+18
                 square(record,"mode2Outline",x,y,160,10,Color3.fromRGB(25,25,30))
                 square(record,"mode2Background",x+2,y+2,156,6,Color3.fromRGB(65,65,75))
-                square(record,"mode2Fill",x+2,y+2,156*second,6,green);y=y+16
+                square(record,"mode2Fill",x+2,y+2,156*second,6,secondPurple);y=y+16
             end
         end
         if movesOn.Value then
