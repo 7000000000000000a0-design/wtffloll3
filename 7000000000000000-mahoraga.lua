@@ -1664,21 +1664,31 @@ local function mountPlayerESP()
         end
         return nil
     end
-    local function readMode(player,character)
+    local function readMode(player,character,secondary)
         -- ABA stores awakening charge on the Player as a constrained value.
         -- Read its actual maximum; do not assume that 100 or 1 means full.
-        local charge=child(player,"Charge")
-        if charge then
-            local ratio=constrainedCharge(charge)
-            if ratio~=nil then return ratio end
-            local ok,current,maximum=pcall(function() return charge.Value,charge.MaxValue end)
-            if not ok or not number(maximum) then
-                local valueOk,value=pcall(function() return charge.Value end)
-                current=valueOk and value or nil
-                maximum=numeric(charge,"MaxValue") or numeric(player,"MaxCharge")
-            end
-            if number(current) and number(maximum) and maximum>0 and current>=0 and current<=maximum then
-                return current/maximum
+        local names=secondary and {"Charge2","SecondCharge","SecondModeCharge","Mode2","SecondMode","Awakening2"} or {"Charge"}
+        local sources={player,character,child(player,"Stats"),child(player,"PlayerData"),child(character,"Stats")}
+        for i=1,5 do
+            for _,name in ipairs(names) do
+                local charge=child(sources[i],name)
+                if charge then
+                    local ratio=constrainedCharge(charge)
+                    if ratio~=nil then return ratio end
+                    local ok,current,maximum=pcall(function() return charge.Value,charge.MaxValue end)
+                    local minOk,minimum=pcall(function() return charge.MinValue end)
+                    if not minOk then minimum=nil end
+                    if not ok or not number(maximum) then
+                        local valueOk,value=pcall(function() return charge.Value end)
+                        current=valueOk and value or nil
+                        maximum=numeric(charge,"MaxValue") or numeric(charge,"Max")
+                            or numeric(sources[i],secondary and "MaxCharge2" or "MaxCharge")
+                    end
+                    minimum=number(minimum) and minimum or 0
+                    if number(current) and number(maximum) and maximum>minimum and current>=minimum and current<=maximum then
+                        return (current-minimum)/(maximum-minimum)
+                    end
+                end
             end
         end
         local containers={}
@@ -1686,15 +1696,15 @@ local function mountPlayerESP()
         add(character);add(player);add(child(player,"Stats"));add(child(player,"PlayerData"))
         add(child(character,"Stats"))
         for _,obj in ipairs(containers) do
-            for _,key in ipairs({"ModePercent","ModePercentage","AwakeningPercent"}) do
+            for _,key in ipairs(secondary and {"Mode2Percent","SecondModePercent","SecondModePercentage","Awakening2Percent"} or {"ModePercent","ModePercentage","AwakeningPercent"}) do
                 local value=numeric(obj,key)
                 if number(value) and value>=0 and value<=100 then return value/100 end
             end
-            for _,key in ipairs({"ModeRatio","AwakeningRatio"}) do
+            for _,key in ipairs(secondary and {"Mode2Ratio","SecondModeRatio","Awakening2Ratio"} or {"ModeRatio","AwakeningRatio"}) do
                 local value=numeric(obj,key)
                 if number(value) and value>=0 and value<=1 then return value end
             end
-            for _,pair in ipairs({{"Mode","MaxMode"},{"Mode","ModeMax"},{"ModeCharge","MaxModeCharge"},{"Awakening","MaxAwakening"}}) do
+            for _,pair in ipairs(secondary and {{"Mode2","MaxMode2"},{"SecondMode","MaxSecondMode"},{"SecondModeCharge","MaxSecondModeCharge"},{"Awakening2","MaxAwakening2"}} or {{"Mode","MaxMode"},{"Mode","ModeMax"},{"ModeCharge","MaxModeCharge"},{"Awakening","MaxAwakening"}}) do
                 local value,maximum=numeric(obj,pair[1]),numeric(obj,pair[2])
                 local meter=child(obj,pair[1])
                 if not number(maximum) and meter then maximum=attribute(meter,"MaxValue") or attribute(meter,"Max") end
@@ -1734,12 +1744,13 @@ local function mountPlayerESP()
         end
         return nil
     end
-    local function componentCooldown(move)
+    local function componentCooldown(move,attributeName)
         -- version-2c6fd5e09aaf4cfa: Instance.ComponentMap (+0x38) is a
         -- vector of {component pointer, type id} entries, each 0x10 bytes.
-        -- Component 9 owns the attributes; its first attribute is at +0x08.
-        -- Verified directly against all four live Hol Horse move instances.
+        -- Component 9 owns either one attribute (+0x08) or a counted attribute
+        -- array (count +0x08, capacity +0x0C, data +0x18). Both layouts verified live.
         if type(memory_read)~="function" then return nil end
+        attributeName=attributeName or "COOLDOWN"
         local ok,result=pcall(function()
             local address=move.Address
             if not number(address) or address<4096 then return nil end
@@ -1754,18 +1765,33 @@ local function mountPlayerESP()
                 if kind==9 then
                     local component=memory_read("uintptr_t",entry)
                     if not number(component) or component<4096 then return nil end
-                    local attribute=memory_read("uintptr_t",component+8)
-                    if not number(attribute) or attribute<4096 then return nil end
-                    local key=memory_read("uintptr_t",attribute)
-                    if not number(key) or key<4096 then return nil end
-                    local length=memory_read("int",key+0x10)
-                    local capacity=memory_read("int",key+0x18)
-                    if length~=8 or not number(capacity) or capacity<8 or capacity>256 then return nil end
-                    local text=key
-                    if capacity>=16 then text=memory_read("uintptr_t",key) end
-                    if not number(text) or text<4096 or memory_read("string",text)~="COOLDOWN" then return nil end
-                    local value=memory_read("double",attribute+0x18)
-                    if number(value) and value>=0 and value<=20 then return value end
+                    local layout=memory_read("int",component)
+                    local count,data=1,memory_read("uintptr_t",component+8)
+                    if layout==1 then
+                        count=memory_read("int",component+8)
+                        local capacity=memory_read("int",component+12)
+                        if not number(count) or not number(capacity) or count<0 or count>128 or capacity<count or capacity>512 then return nil end
+                        data=memory_read("uintptr_t",component+0x18)
+                    elseif layout~=0 then return nil end
+                    if not number(data) or data<4096 then return nil end
+                    for index=0,count-1 do
+                        local attribute=data+index*0x58
+                        local key=memory_read("uintptr_t",attribute)
+                        if not number(key) or key<4096 then return nil end
+                        local length=memory_read("int",key+0x10)
+                        if length==#attributeName then
+                            local capacity=memory_read("int",key+0x18)
+                            if number(capacity) and capacity>=8 and capacity<=256 then
+                                local text=key
+                                if capacity>=16 then text=memory_read("uintptr_t",key) end
+                                if number(text) and text>=4096 and memory_read("string",text)==attributeName then
+                                    local value=memory_read("double",attribute+0x18)
+                                    if number(value) and value>=0 and value<=20 then return value end
+                                    return nil
+                                end
+                            end
+                        end
+                    end
                     return nil
                 end
             end
@@ -1837,14 +1863,29 @@ local function mountPlayerESP()
         local moves,seen={},{}
         if record then record.cooldowns=record.cooldowns or {} end
         local present={}
-        local function scan(container)
-            if not container then return end
-            for _,move in ipairs(container:GetChildren()) do
+        local foldersSeen={}
+        local function scan(container,depth)
+            if not container or foldersSeen[container] then return end
+            foldersSeen[container]=true
+            local success,children=pcall(function() return container:GetChildren() end)
+            if not success then return end
+            for _,move in ipairs(children) do
                 local config=child(move,".Config")
-                if config and move:IsA("Configuration") and not seen[move] then
-                    seen[move]=true
+                local identity=characterKey(move)
+                if config and move.ClassName=="Configuration" and not seen[identity] then
+                    seen[identity]=true
                     local slot
-                    for i=1,5 do if child(config,"Slot"..i) then slot=i;break end end
+                    local ok,markers=pcall(function() return config:GetChildren() end)
+                    if ok then
+                        for _,marker in ipairs(markers) do
+                            local candidate=tonumber(tostring(marker.Name):match("^Slot(%d+)$"))
+                            if candidate and candidate>=1 and candidate<=99 and (not slot or candidate<slot) then slot=candidate end
+                        end
+                    end
+                    if not slot then
+                        local candidate=numeric(config,"Slot")
+                        if number(candidate) and candidate>=1 and candidate<=99 and candidate%1==0 then slot=candidate end
+                    end
                     local name=move.Name
                     local rename=child(config,"NewName")
                     if rename then
@@ -1855,14 +1896,33 @@ local function mountPlayerESP()
                     local source=cd~=nil and "HUD" or "attribute"
                     if cd==nil then cd,source=readCooldown(move) end
                     if cd==nil then source="unavailable" end
-                    local key=tostring(slot or "?")..":"..tostring(name)
+                    -- NewName can change with charges/variants; the underlying move
+                    -- instance owns the cooldown independently of its display name.
+                    local key=tostring(identity)
                     present[key]=true
                     if record then cd,source=trackCooldown(record.cooldowns,key,cd,source,now) end
-                    moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,source=source}
+                    moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,source=source,instance=identity}
+                elseif depth>0 and move.ClassName=="Folder" and move.Name~=".Config" then
+                    scan(move,depth-1)
                 end
             end
         end
-        scan(child(player,"Backpack"));scan(character)
+        scan(child(player,"Backpack"),2);scan(character,2)
+        -- Match ABA's fallback assignment for moves without a Slot marker.
+        local occupied={}
+        for _,move in ipairs(moves) do if move.slot then occupied[move.slot]=true end end
+        for _,move in ipairs(moves) do
+            if not move.slot then
+                for slot=1,5 do
+                    if not occupied[slot] then move.slot=slot;occupied[slot]=true;break end
+                end
+                local value=hudCooldown(player,move.slot,move.name)
+                if value~=nil then
+                    move.cd,move.source=value,"HUD"
+                    if record then move.cd,move.source=trackCooldown(record.cooldowns,tostring(move.instance),value,"HUD",now) end
+                end
+            end
+        end
         if record then
             for key in pairs(record.cooldowns) do if not present[key] then record.cooldowns[key]=nil end end
         end
@@ -2092,7 +2152,7 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.nextRead=0;record.mode=nil;record.moves={};record.cooldowns={}
+            hide(record);record.character=identity;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -2110,10 +2170,12 @@ local function mountPlayerESP()
         if not point or not visible then hide(record);return end
         -- Do not read point.Z: Matcha's Vector2 projections do not expose it.
         if now>=record.nextRead then
-            record.mode=nil;record.moves={}
+            record.mode=nil;record.mode2=nil;record.moves={}
             if modeOn.Value then
                 local success,value=pcall(readMode,player,character)
                 if success then record.mode=value end
+                local secondOk,secondValue=pcall(readMode,player,character,true)
+                if secondOk then record.mode2=secondValue end
             end
             if movesOn.Value then
                 local success,value=pcall(readMoves,player,character,record,now)
@@ -2122,7 +2184,7 @@ local function mountPlayerESP()
             record.nextRead=now+.05
         end
         record.used={}
-        local height=18+(modeOn.Value and 34 or 0)+(movesOn.Value and math.max(1,#record.moves)*16 or 0)
+        local height=18+(modeOn.Value and (34+(record.mode2~=nil and 34 or 0)) or 0)+(movesOn.Value and math.max(1,#record.moves)*16 or 0)
         local x=math.max(4,math.min(point.X-160,camera.ViewportSize.X-324))
         local y=math.max(4,math.min(point.Y-height,camera.ViewportSize.Y-height-4))
         label(record,"name",tostring(player.DisplayName or player.Name),x,y,white);y=y+18
@@ -2134,6 +2196,13 @@ local function mountPlayerESP()
             square(record,"modeBackground",x+2,y+2,156,6,Color3.fromRGB(65,65,75))
             if ratio then square(record,"modeFill",x+2,y+2,156*ratio,6,green) end
             y=y+16
+            if record.mode2~=nil then
+                local second=record.mode2
+                label(record,"mode2",string.format("Second Mode: %.2f%%",second*100),x,y,green);y=y+18
+                square(record,"mode2Outline",x,y,160,10,Color3.fromRGB(25,25,30))
+                square(record,"mode2Background",x+2,y+2,156,6,Color3.fromRGB(65,65,75))
+                square(record,"mode2Fill",x+2,y+2,156*second,6,green);y=y+16
+            end
         end
         if movesOn.Value then
             if #record.moves==0 then label(record,"unknownMoves","Moves: Unknown",x,y,gray) end
