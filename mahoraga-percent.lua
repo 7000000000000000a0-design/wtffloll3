@@ -1027,7 +1027,7 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
         lastError=tostring(otherError);print("[ABA Timings] "..lastError)
     end
 end)
--- One camera snapshot per ESP frame, with a native-projection fallback for Matcha.
+-- Capture camera orientation once; use the runner's native projection for drawing.
 local function screenProjection(camera)
     if not camera then return nil end
     local view=camera.ViewportSize
@@ -1049,22 +1049,26 @@ local function screenProjection(camera)
         local upLength=matrix[5]^2+matrix[8]^2+matrix[11]^2
         local backLength=matrix[6]^2+matrix[9]^2+matrix[12]^2
         if math.abs(rightLength-1)>.01 or math.abs(upLength-1)>.01 or math.abs(backLength-1)>.01 then return end
+        frame.right=Vector3.new(matrix[4],matrix[7],matrix[10])
+        frame.up=Vector3.new(matrix[5],matrix[8],matrix[11])
         if frame.focal then frame.matrix=matrix end
     end)
+    local function readDirection(name)
+        local ok,value=pcall(function() return camera.CFrame[name] end)
+        if not ok or not value then return nil end
+        local valid,x,y,z=pcall(function() return value.X,value.Y,value.Z end)
+        if not valid or type(x)~="number" or type(y)~="number" or type(z)~="number" then return nil end
+        local length=x*x+y*y+z*z
+        if length<.99 or length>1.01 then return nil end
+        return Vector3.new(x,y,z)
+    end
+    if not frame.right then frame.right=readDirection("RightVector") end
+    if not frame.up then frame.up=readDirection("UpVector") end
     return frame
 end
 local function projectToScreen(position,camera,frame)
     if not camera or not position then return nil,false end
     frame=frame or screenProjection(camera)
-    if frame and frame.matrix then
-        local m=frame.matrix
-        local dx,dy,dz=position.X-m[1],position.Y-m[2],position.Z-m[3]
-        local depth=-(dx*m[6]+dy*m[9]+dz*m[12])
-        if depth<=.01 then return nil,false,depth end
-        local x=frame.width/2+(dx*m[4]+dy*m[7]+dz*m[10])*frame.focal/depth
-        local y=frame.height/2-(dx*m[5]+dy*m[8]+dz*m[11])*frame.focal/depth
-        return Vector2.new(x,y),x>=0 and y>=0 and x<=frame.width and y<=frame.height,depth
-    end
     local function accept(point,visible)
         if not point then return nil,false end
         local ok,x,y=pcall(function() return point.X,point.Y end)
@@ -1078,12 +1082,40 @@ local function projectToScreen(position,camera,frame)
         end
         return point,visible,depth
     end
-    if type(WorldToScreen)=="function" then
+    -- Keep every point in a frame on the same native projection backend.
+    if (not frame or not frame.backend or frame.backend=="WorldToScreen") and type(WorldToScreen)=="function" then
         local ok,point,visible=pcall(WorldToScreen,position)
-        if ok and point then return accept(point,visible) end
+        if ok and point then
+            local accepted,onScreen,depth=accept(point,visible)
+            if accepted or depth then
+                if frame then frame.backend="WorldToScreen" end
+                return accepted,onScreen,depth
+            end
+        end
+        if frame and frame.backend=="WorldToScreen" then return nil,false end
     end
-    local ok,point,visible=pcall(function() return camera:WorldToViewportPoint(position) end)
-    if ok then return accept(point,visible) end
+    if not frame or not frame.backend or frame.backend=="Viewport" then
+        local ok,point,visible=pcall(function() return camera:WorldToViewportPoint(position) end)
+        if ok and point then
+            local accepted,onScreen,depth=accept(point,visible)
+            if accepted or depth then
+                if frame then frame.backend="Viewport" end
+                return accepted,onScreen,depth
+            end
+        end
+        if frame and frame.backend=="Viewport" then return nil,false end
+    end
+    -- Older runners lacking both methods can still use a valid camera matrix.
+    if frame and frame.matrix then
+        local m=frame.matrix
+        local dx,dy,dz=position.X-m[1],position.Y-m[2],position.Z-m[3]
+        local depth=-(dx*m[6]+dy*m[9]+dz*m[12])
+        if depth<=.01 then return nil,false,depth end
+        local x=frame.width/2+(dx*m[4]+dy*m[7]+dz*m[10])*frame.focal/depth
+        local y=frame.height/2-(dx*m[5]+dy*m[8]+dz*m[11])*frame.focal/depth
+        frame.backend="Matrix"
+        return Vector2.new(x,y),x>=0 and y>=0 and x<=frame.width and y<=frame.height,depth
+    end
     return nil,false
 end
 
@@ -2366,7 +2398,18 @@ local function mountPlayerESP()
         if not point or not number(point.X) or not number(point.Y) then return nil end
         frame=frame or screenProjection(camera)
         local scale
-        if frame and frame.focal then
+        -- Measure one camera-facing world unit with the SAME projection as the
+        -- root. This avoids mixing native screen positions with FOV/distance sizing.
+        local axis=frame and (frame.right or frame.up)
+        if axis then
+            local unitPoint=project(center+axis,camera,frame)
+            if unitPoint and number(unitPoint.X) and number(unitPoint.Y) then
+                local dx,dy=unitPoint.X-point.X,unitPoint.Y-point.Y
+                local measured=math.sqrt(dx*dx+dy*dy)
+                if number(measured) and measured>.01 then scale=measured end
+            end
+        end
+        if not scale and frame and frame.focal then
             local depth
             if frame.matrix then
                 local m=frame.matrix
@@ -2603,13 +2646,34 @@ local function mountPlayerESP()
         for player in pairs(records) do if not present[player] then removed[#removed+1]=player end end
         for _,player in ipairs(removed) do release(records[player]);records[player]=nil end
     end
-    -- Heartbeat is the working Matcha signal. Draw on every tick, while
-    -- nextRead keeps replicated meter/cooldown reads at the original rate.
-    heartbeat=RunService.Heartbeat:Connect(renderESP)
+    local renderConnection,renderBinding
+    local lastRenderSignal=-math.huge
+    local function onRender()
+        if stopped or not alive then return end
+        lastRenderSignal=tick and tick() or os.clock()
+        renderESP()
+    end
+    pcall(function()
+        if type(RunService.BindToRenderStep)=="function" then
+            local name="ABAModeESP_"..tostring(state)
+            RunService:BindToRenderStep(name,201,onRender)
+            renderBinding=name
+        end
+    end)
+    if not renderBinding then
+        pcall(function() renderConnection=RunService.RenderStepped:Connect(onRender) end)
+    end
+    heartbeat=RunService.Heartbeat:Connect(function()
+        if stopped or not alive then return end
+        local now=tick and tick() or os.clock()
+        if now-lastRenderSignal>.1 then renderESP() end
+    end)
     return function()
         if stopped then return end
         stopped=true
         capture=nil
+        if renderBinding then pcall(function() RunService:UnbindFromRenderStep(renderBinding) end) end
+        if renderConnection then pcall(function() renderConnection:Disconnect() end) end
         if heartbeat then pcall(function() heartbeat:Disconnect() end) end
         for _,record in pairs(records) do release(record) end
         records={}
