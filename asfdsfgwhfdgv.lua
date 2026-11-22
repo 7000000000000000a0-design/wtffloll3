@@ -3967,12 +3967,25 @@ local function mountPlayerESP()
             task.wait(.025)
         end
     end
-    local function sidebarLayout(viewWidth,viewHeight,count,requestedPage)
+    local function sidebarMoveSize(width,count,scale)
+        local gap=4*scale
+        local multiplier=math.max(.25,math.min(2,(tonumber(moveSize.Value) or 100)/100))
+        return math.max(1,math.min(64*scale*multiplier,(width-gap*(count-1))/count)),gap
+    end
+    local function sidebarLayout(viewWidth,viewHeight,count,requestedPage,entries)
         local scale=math.max(.65,math.min(1.3,viewHeight/900))
         local left=16*scale
         local top=viewHeight*.20
         local width=math.min(viewWidth-left*2,math.max(220*scale,math.min(340*scale,viewWidth*.21)))
         local rowHeight=82*scale
+        if movesOn.Value then
+            local largestCard=0
+            for _,entry in ipairs(entries or {}) do
+                local size=sidebarMoveSize(width,math.max(1,#entry.sample.record.moves),scale)
+                largestCard=math.max(largestCard,size)
+            end
+            rowHeight=rowHeight+largestCard+8*scale
+        end
         local rows=math.max(1,math.floor((viewHeight-top-42*scale)/rowHeight))
         local pages=math.max(1,math.ceil(count/rows))
         local page=math.max(1,math.min(pages,math.floor(requestedPage or 1)))
@@ -4021,8 +4034,9 @@ local function mountPlayerESP()
         end
         -- Alphabetical order is independent of camera direction and distance.
         table.sort(entries,function(a,b) return a.identity<b.identity end)
-        local layout=sidebarLayout(view.X,view.Y,#entries,1)
+        local layout=sidebarLayout(view.X,view.Y,#entries,1,entries)
         local scale=layout.scale
+        local now=tick and tick() or os.clock()
         local green=Color3.fromRGB(0,255,0)
         local sidebarModeRed=Color3.fromRGB(235,35,35)
         local seen={}
@@ -4054,6 +4068,18 @@ local function mountPlayerESP()
                 sidebarMeter(row,"Mode2",data.mode2,x+4*scale,y+62*scale,width-8*scale,12*scale,10,secondPurple,scale)
 
             end
+            if movesOn.Value then
+                local moves={}
+                for _,move in ipairs(data.moves) do moves[#moves+1]=move end
+                table.sort(moves,function(a,b) return (tonumber(a.slot) or 99)<(tonumber(b.slot) or 99) end)
+                if #moves==0 then moves[1]={name="Moves",source="unknown"} end
+                local size,gap=sidebarMoveSize(width,#moves,scale)
+                local startX=x+(width-(#moves*size+(#moves-1)*gap))/2
+                local moveY=y+(data.mode2~=nil and data.showMode2 and 82 or 64)*scale
+                for index,move in ipairs(moves) do
+                    moveBox(row,index,move,startX+(index-1)*(size+gap),moveY,size,size,now)
+                end
+            end
             for key,drawing in pairs(row.drawings) do
                 if not row.used[key] then set(drawing,"Visible",false) end
             end
@@ -4082,7 +4108,7 @@ local function mountPlayerESP()
                 print("[Mode sidebar] "..sidebarLastError)
             end
         else sidebarLastError=nil end
-        if sidebarOn.Value and not movesOn.Value then
+        if sidebarOn.Value and modeOn.Value then
             for _,record in pairs(records) do hide(record) end
             return
         end
