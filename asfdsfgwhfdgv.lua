@@ -3756,9 +3756,9 @@ local function mountPlayerESP()
                         inset=radius-math.sqrt(math.max(0,radius*radius-dy*dy))
                     end
                     local fillKey=key.."Cooldown"..part
-                    square(record,fillKey,x+inset,y+first,math.max(0,w-inset*2),last-first,Color3.fromRGB(100,103,110))
+                    square(record,fillKey,x+inset,y+first,math.max(0,w-inset*2),last-first,Color3.fromRGB(11,2,2))
                     set(record.drawings[fillKey],"ZIndex",902)
-                    set(record.drawings[fillKey],"Transparency",.75)
+                    set(record.drawings[fillKey],"Transparency",1)
                 end
             end
         end
@@ -3989,10 +3989,10 @@ local function mountPlayerESP()
         square(record,key.."Border",x-border,y-border,width+border*2,height+border*2,dark)
         set(record.drawings[key.."Border"],"Corner",3*scale)
         set(record.drawings[key.."Border"],"ZIndex",900)
-        local trackColor=key=="Mode2" and secondPurple or Color3.fromRGB(175,195,205)
+        local trackColor=Color3.fromRGB(175,195,205)
         square(record,key.."Track",x,y,width,height,trackColor)
         set(record.drawings[key.."Track"],"ZIndex",901)
-        set(record.drawings[key.."Track"],"Transparency",key=="Mode2" and .24 or .13)
+        set(record.drawings[key.."Track"],"Transparency",.13)
         if number(ratio) then
             local fill=width*math.max(0,math.min(1,ratio))
             if fill>0 then
