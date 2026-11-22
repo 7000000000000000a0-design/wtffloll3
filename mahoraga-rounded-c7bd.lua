@@ -1823,6 +1823,10 @@ local function mountPlayerESP()
     local red=Color3.fromRGB(255,110,110)
     local gray=Color3.fromRGB(185,185,195)
     local white=Color3.fromRGB(245,245,250)
+    local moveBlue=Color3.fromRGB(0,110,255)
+    local moveRed=Color3.fromRGB(250,0,0)
+    local cooldownGray=Color3.fromRGB(100,103,110)
+    local meterOutlineColor=Color3.fromRGB(15,15,18)
     local function number(value)
         return type(value)=="number" and value==value and value>-math.huge and value<math.huge
     end
@@ -2890,6 +2894,7 @@ local function mountPlayerESP()
         if values[key]~=value then d[key]=value;values[key]=value end
     end
     local function hide(record)
+        record.displayPose=nil
         for _,d in pairs(record.drawings) do pcall(function() set(d,"Visible",false) end) end
     end
     local function release(record)
@@ -2974,6 +2979,31 @@ local function mountPlayerESP()
         end
         return root.Position
     end
+    local function displayPose(record,x,y,scale,span,now,width,height)
+        local previous=record.displayPose
+        local dt=previous and now-previous.time or 0
+        local dx=previous and x-previous.x or 0
+        local dy=previous and y-previous.y or 0
+        if not previous or dt<=0 or dt>.1 or dx*dx+dy*dy>6400
+            or previous.width~=width or previous.height~=height then
+            record.displayPose={x=x,y=y,scale=scale,time=now,width=width,height=height}
+            return x,y,scale
+        end
+        -- Cosmetic damping only: the whole group shares this one pose.
+        -- Bound the total positional lag to two pixels; never accumulate a long
+        -- trailing path behind movement, teleports or a camera cut.
+        local retained=math.exp(-dt/.014)
+        local ox,oy=(previous.x-x)*retained,(previous.y-y)*retained
+        local length=math.sqrt(ox*ox+oy*oy)
+        if length>2 then ox=ox*2/length;oy=oy*2/length end
+        local sx,sy=x+ox,y+oy
+        local scaleError=(previous.scale-scale)*math.exp(-dt/.03)
+        local scaleLimit=.75/math.max(1,span)
+        scaleError=math.max(-scaleLimit,math.min(scaleLimit,scaleError))
+        local fittedScale=math.max(.0001,scale+scaleError)
+        record.displayPose={x=sx,y=sy,scale=fittedScale,time=now,width=width,height=height}
+        return sx,sy,fittedScale
+    end
     local function bodyBounds(record,character,root,camera,rootPosition,rootPoint,frame,now)
         local bounds=record.bounds
         if not bounds then return nil end
@@ -3025,8 +3055,12 @@ local function mountPlayerESP()
             end
             if not number(scale) or scale<.1 then scale=record.lastScale or 12 end
         end
-        -- Position and scale share one world anchor and projection backend.
-        -- No screen-space inertia, prediction, median sampling or catch-up drift.
+        -- Sampled geometry remains the target. Apply one small, bounded visual
+        -- correction before deriving ANY bar/card coordinates, so both sides
+        -- cannot drift independently. Raw values still own cooldowns and fills.
+        local x,y
+        x,y,scale=displayPose(record,point.X,point.Y,scale,upper+lower,now,frame.width,frame.height)
+        point=Vector2.new(x,y)
         record.lastScale=scale
         local height=(upper+lower)*scale
         if height<3 then height=3;scale=height/(upper+lower) end
@@ -3047,7 +3081,7 @@ local function mountPlayerESP()
         local borderWidth=math.max(.5,uiScale)
         local value=ratio~=nil and string.format("%.0f%%",math.max(0,math.min(1,ratio))*100) or "--%"
         label(record,percentKey,value,percentX,top,color)
-        square(record,key.."Outline",x-borderWidth,top-borderWidth,lineWidth+borderWidth*2,height+borderWidth*2,Color3.fromRGB(15,15,18))
+        square(record,key.."Outline",x-borderWidth,top-borderWidth,lineWidth+borderWidth*2,height+borderWidth*2,meterOutlineColor)
         set(record.drawings[key.."Outline"],"ZIndex",900)
         if ratio~=nil then
             local fill=height*math.max(0,math.min(1,ratio))
@@ -3060,7 +3094,7 @@ local function mountPlayerESP()
         local value=move.cd
         local known=number(value)
         local ready=known and value>=20
-        local tint=move.guardbreak==true and Color3.fromRGB(0,110,255) or Color3.fromRGB(250,0,0)
+        local tint=move.guardbreak==true and moveBlue or moveRed
         local radius=math.min(w,h)*.16
         square(record,key.."Body",x,y,w,h,tint)
         set(record.drawings[key.."Body"],"ZIndex",901)
@@ -3087,7 +3121,7 @@ local function mountPlayerESP()
                         inset=radius-math.sqrt(math.max(0,radius*radius-dy*dy))
                     end
                     local fillKey=key.."Cooldown"..part
-                    square(record,fillKey,x+inset,y+first,math.max(0,w-inset*2),last-first,Color3.fromRGB(100,103,110))
+                    square(record,fillKey,x+inset,y+first,math.max(0,w-inset*2),last-first,cooldownGray)
                     set(record.drawings[fillKey],"ZIndex",902)
                     set(record.drawings[fillKey],"Transparency",.75)
                 end
@@ -3112,6 +3146,15 @@ local function mountPlayerESP()
         for word in name:gmatch("%S+") do longest=math.max(longest,#word) end
         -- Fit complete words first, then wrap all lines. Never abbreviate names.
         local nameSize=math.max(1,math.floor(math.min(14*textScale,width/(longest*.65))))
+        record.moveTextLayouts=record.moveTextLayouts or {}
+        local layout=record.moveTextLayouts[key]
+        local layoutWidth,layoutHeight=math.floor(width),math.floor(available)
+        local initialSize=nameSize
+        local lines
+        if layout and layout.name==name and layout.width==layoutWidth
+            and layout.height==layoutHeight and layout.initialSize==initialSize then
+            lines,nameSize=layout.lines,layout.nameSize
+        else
         local function wrap(size)
             local maxChars=math.max(1,math.floor(width/(size*.65)))
             local lines,current={},""
@@ -3129,9 +3172,12 @@ local function mountPlayerESP()
             if #lines==0 then lines={"Unknown"} end
             return lines
         end
-        local lines=wrap(nameSize)
+        lines=wrap(nameSize)
         while nameSize>1 and #lines*(nameSize+1)>available do
             nameSize=nameSize-1;lines=wrap(nameSize)
+        end
+            record.moveTextLayouts[key]={name=name,width=layoutWidth,height=layoutHeight,
+                initialSize=initialSize,lines=lines,nameSize=nameSize}
         end
         local lineHeight=math.min(nameSize+1,available/math.max(1,#lines))
         local nameY=top+math.max(0,(available-#lines*lineHeight)/2)
