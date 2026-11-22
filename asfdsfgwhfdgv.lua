@@ -1113,28 +1113,39 @@ local function macroTap(vk)
 end
 local function mountInputBuffer()
     local page=window:Tab("Input Buffer")
-    page:Paragraph({Name="Hold to repeat",Content="Choose inputs below, then hold 1–4, G or a mouse button to repeat at a 20 ms target interval. Release to stop. Close the menu while playing."})
+    page:Paragraph({Name="Hold to repeat",Content="Choose inputs, then hold 1–4, G or a mouse button to repeat at a 20 ms target interval. Release to stop. After pausing, release held inputs before using them again. Close the menu while playing."})
     local status=page:Paragraph({Name="Input status",Content="Off"})
-    local held={}
+    local held,blockedUntilUp={},{}
     local stopped=false
     local repeatInterval=.020
     local inputs={
         {key=0x31,name="1"},{key=0x32,name="2"},{key=0x33,name="3"},{key=0x34,name="4"},
         {key=0x47,name="G"},{key=0x01,mouse=1,name="M1"},{key=0x02,mouse=2,name="M2"}
     }
+    local function readDown(input)
+        if type(iskeypressed)~="function" then return nil end
+        local ok,down=pcall(iskeypressed,input.key)
+        if not ok or type(down)~="boolean" then return nil end
+        return down
+    end
     local function releaseInput(input)
+        -- A macro may have taken ownership after the buffer was suspended.
+        if macroBusy and (input.mouse or macroHeldKeys[input.key]) then return end
         if input.mouse==1 then
             if type(mouse1release)=="function" then pcall(mouse1release) end
         elseif input.mouse==2 then
             if type(mouse2release)=="function" then pcall(mouse2release) end
         elseif type(keyrelease)=="function" then pcall(keyrelease,input.key) end
     end
+    local function clearInput(input,requireRelease)
+        local state=held[input.key]
+        local down=readDown(input)
+        if requireRelease and (state or down==true or down==nil) then blockedUntilUp[input.key]=true end
+        if state and state.owned then releaseInput(input) end
+        held[input.key]=nil
+    end
     local function releaseAll()
-        for _,input in ipairs(inputs) do
-            local state=held[input.key]
-            if state and state.owned then releaseInput(input) end
-        end
-        held={}
+        for _,input in ipairs(inputs) do clearInput(input,true) end
     end
     local toggle=page:Toggle({Name="20 ms input buffer",Default=false,Flag="input_buffer_25ms",
         Callback=function(on) if not on then releaseAll() end end})
@@ -1150,16 +1161,15 @@ local function mountInputBuffer()
         local selected=input
         selected.toggle=page:Toggle({Name="Buffer "..selected.name,Default=true,
             Flag="input_buffer_input_"..selected.name:lower(),Callback=function(on)
-                if not on then
-                    local state=held[selected.key]
-                    if state and state.owned then releaseInput(selected) end
-                    held[selected.key]=nil
-                end
+                if not on then clearInput(selected,true) end
             end})
     end
     local lastStatus
     local function message(text)
-        if text~=lastStatus then status:Set(text);lastStatus=text end
+        if text~=lastStatus then
+            local ok=pcall(function() status:Set(text) end)
+            if ok then lastStatus=text end
+        end
     end
     local function supported(input)
         if input.mouse==1 then return type(mouse1release)=="function" and type(mouse1press)=="function" end
@@ -1167,62 +1177,81 @@ local function mountInputBuffer()
         return type(keyrelease)=="function" and type(keypress)=="function"
     end
     local function repeatInput(input,state)
-        -- Finish each synthetic cycle DOWN, matching the physical held state.
-        -- A normal click (down/up) would falsely make iskeypressed report a
-        -- release after our own injection and prematurely stop hold-to-repeat.
         state.owned=true
         if input.mouse==1 then mouse1release();mouse1press()
         elseif input.mouse==2 then mouse2release();mouse2press()
         else keyrelease(input.key);keypress(input.key) end
     end
+    local lastUpdate
     local function updateBuffer(now)
-        if stopped or not alive or not toggle.Value then releaseAll();message("Off");return end
-        if macroBusy then message("Paused during macro");return end
+        if type(now)~="number" or now~=now then releaseAll();message("Waiting for clock");return end
+        if lastUpdate and now<lastUpdate then
+            lastUpdate=now;releaseAll();message("Clock reset · release held inputs to resume");return
+        end
+        lastUpdate=now
+        if stopped or not alive then releaseAll();return end
+        if not toggle.Value then releaseAll();message("Off");return end
+        if macroBusy then releaseAll();message("Paused during macro");return end
         local menuOK,menuOpen=pcall(function() return window:IsOpen() end)
         if not menuOK or menuOpen then releaseAll();message("Paused while menu is open");return end
         local allowedOK,allowed=pcall(macroInputAllowed)
         if not allowedOK or not allowed then releaseAll();message("Paused: focus, chat or whitelist");return end
         if type(iskeypressed)~="function" then releaseAll();message("Key-state API unavailable");return end
-        local missing=false
+        local missing,failed,selectedCount=false,false,0
         for _,input in ipairs(inputs) do
-            if not input.toggle.Value then
-                local state=held[input.key]
-                if state and state.owned then releaseInput(input) end
+            local down=readDown(input)
+            if down==false then blockedUntilUp[input.key]=nil end
+            local reserved=toggleKey.Value==input.key
+                or (blockDetectionClaimsKey and blockDetectionClaimsKey(input.key))
+            if not input.toggle.Value or reserved then
+                clearInput(input,true)
+            elseif not supported(input) then
+                clearInput(input,true);missing=true
+            elseif down==nil then
+                clearInput(input,true);failed=true
+            elseif blockedUntilUp[input.key] then
+                -- Observe a real up sample before resuming after a pause/error.
                 held[input.key]=nil
-            elseif supported(input) then
-                local downOK,down=pcall(iskeypressed,input.key)
+            else
+                selectedCount=selectedCount+1
                 local state=held[input.key]
-                if not downOK or down~=true then
-                    -- The physical release already delivered key-up to the game.
+                if not down then
+                    if state and state.owned then releaseInput(input) end
                     held[input.key]=nil
                 elseif not state then
-                    -- The user's initial press already reached Roblox. First
-                    -- repeat happens only after 20 ms, never as a duplicate press.
                     held[input.key]={nextAt=now+repeatInterval,owned=false}
                 elseif now>=state.nextAt then
-                    repeatInput(input,state)
-                    -- At most one repeat per update: no burst after a frame stall.
-                    state.nextAt=now+repeatInterval
+                    local ok=pcall(repeatInput,input,state)
+                    if not ok then clearInput(input,true);failed=true
+                    else state.nextAt=now+repeatInterval end
                 end
-            else missing=true end
+            end
         end
-        message(missing and "Active: some mouse/key APIs unavailable" or "Active · 20 ms target")
+        message(failed and "Input read/send failed · release affected inputs to retry"
+            or missing and "Active: some input APIs unavailable"
+            or selectedCount==0 and "No available inputs · check toggles or release held inputs"
+            or "Active · 20 ms target")
     end
+    local function poll()
+        local ok,err=pcall(updateBuffer,tick and tick() or os.clock())
+        if not ok then releaseAll();message("Retrying buffer: "..tostring(err)) end
+    end
+    local fallback
     if task and type(task.spawn)=="function" and type(task.wait)=="function" then
         task.spawn(function()
             while alive and not stopped do
-                local ok,err=pcall(updateBuffer,tick and tick() or os.clock())
-                if not ok then
-                    releaseAll();toggle:Set(false)
-                    message("Stopped: "..tostring(err))
-                end
+                poll()
                 task.wait(toggle.Value and .005 or .05)
             end
             releaseAll()
         end)
-    else message("Scheduler API unavailable") end
-    return function() stopped=true;releaseAll() end,releaseAll
+    else fallback=connectFrame("Heartbeat",poll) end
+    return function()
+        stopped=true;releaseAll()
+        if fallback then pcall(function() fallback:Disconnect() end) end
+    end,releaseAll
 end
+
 destroyInputBuffer,suspendInputBuffer=mountInputBuffer()
 
 local function mountBlockWatcher()
