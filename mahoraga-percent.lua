@@ -1035,6 +1035,7 @@ local function screenProjection(camera)
     pcall(function()
         local fov=camera.FieldOfView
         if type(fov)=="number" and fov>0 and fov<180 then
+            frame.fov=fov
             frame.focal=view.Y/(2*math.tan(math.rad(fov)/2))
         end
     end)
@@ -2364,7 +2365,7 @@ local function mountPlayerESP()
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
     end
-    local function bodyBounds(record,character,root,camera,rootPosition,rootPoint,frame)
+    local function bodyBounds(record,character,root,camera,rootPosition,rootPoint,frame,now)
         -- Read sizes rather than animated limb positions. Refresh on every draw so
         -- transforms, scaling and late-loading rig parts immediately update bounds.
         local function dimension(part,axis,fallback)
@@ -2398,14 +2399,17 @@ local function mountPlayerESP()
         if not point or not number(point.X) or not number(point.Y) then return nil end
         frame=frame or screenProjection(camera)
         local scale
-        -- Measure one camera-facing world unit with the SAME projection as the
-        -- root. This avoids mixing native screen positions with FOV/distance sizing.
+        -- Use two consecutive, widely spaced probes. Subtracting a later probe
+        -- from an earlier root point amplified camera timing error into size pops.
         local axis=frame and (frame.right or frame.up)
         if axis then
-            local unitPoint=project(center+axis,camera,frame)
-            if unitPoint and number(unitPoint.X) and number(unitPoint.Y) then
-                local dx,dy=unitPoint.X-point.X,unitPoint.Y-point.Y
-                local measured=math.sqrt(dx*dx+dy*dy)
+            local halfSpan=math.max(2,halfWidth)
+            local first=project(center-axis*halfSpan,camera,frame)
+            local second=project(center+axis*halfSpan,camera,frame)
+            if first and second and number(first.X) and number(first.Y)
+                and number(second.X) and number(second.Y) then
+                local dx,dy=second.X-first.X,second.Y-first.Y
+                local measured=math.sqrt(dx*dx+dy*dy)/(halfSpan*2)
                 if number(measured) and measured>.01 then scale=measured end
             end
         end
@@ -2427,6 +2431,40 @@ local function mountPlayerESP()
             if top and bottom then scale=math.abs(bottom.Y-top.Y)/(upper+lower) end
             if not number(scale) or scale<.1 then scale=record.lastScale or 12 end
         end
+        -- Filter SIZE only. The screen anchor remains the current root point.
+        now=now or (tick and tick() or os.clock())
+        local filter=record.scaleFilter
+        local reset=not filter or filter.camera~=camera or now<filter.time or now-filter.time>.25
+        if not reset and frame and frame.fov and filter.fov and math.abs(frame.fov-filter.fov)>3 then reset=true end
+        if not reset then
+            pcall(function() if (center-filter.worldPosition).Magnitude>12 then reset=true end end)
+            if frame and frame.position and filter.cameraPosition then
+                pcall(function() if (frame.position-filter.cameraPosition).Magnitude>12 then reset=true end end)
+            end
+        end
+        if reset then
+            filter={camera=camera,value=scale,time=now,samples={}}
+            record.scaleFilter=filter
+        end
+        local samples=filter.samples
+        samples[#samples+1]={value=scale,time=now}
+        while #samples>5 or (#samples>1 and now-samples[1].time>.12) do table.remove(samples,1) end
+        local values={}
+        for _,sample in ipairs(samples) do values[#values+1]=sample.value end
+        table.sort(values)
+        local count=#values
+        local target=count%2==0 and (values[count/2]+values[count/2+1])/2 or values[(count+1)/2]
+        local dt=math.max(0,math.min(.1,now-filter.time))
+        local difference=math.log(target/filter.value)
+        if math.abs(difference)>.004 then
+            local change=difference*(1-math.exp(-28*dt))
+            local maximum=2.5*dt
+            filter.value=filter.value*math.exp(math.max(-maximum,math.min(maximum,change)))
+        end
+        filter.time=now;filter.worldPosition=center
+        filter.cameraPosition=frame and frame.position or nil
+        filter.fov=frame and frame.fov or nil
+        scale=filter.value
         record.lastScale=scale
         local height=(upper+lower)*scale
         if height<3 then height=3;scale=height/(upper+lower) end
@@ -2484,10 +2522,22 @@ local function mountPlayerESP()
             label(record,key..suffix,text,tx,ty,white)
         end
         local textScale=math.min(1,w/64,h/64)
-        local nameSize=math.max(4,math.floor(10*textScale+.5))
-        local stateSize=math.max(4,math.floor(9*textScale+.5))
-        local slotSize=math.max(4,math.floor(11*textScale+.5))
-        if h>=20 then
+        record.moveTextLayouts=record.moveTextLayouts or {}
+        local layout=record.moveTextLayouts[key]
+        if not layout then layout={compact=h<20,lines=h>=36 and 2 or 1};record.moveTextLayouts[key]=layout end
+        local function font(name,raw)
+            local previous=layout[name]
+            if not previous or raw>previous+.7 or raw<previous-.7 then
+                previous=math.max(4,math.floor(raw+.5));layout[name]=previous
+            end
+            return previous
+        end
+        local nameSize=font("nameSize",10*textScale)
+        local stateSize=font("stateSize",9*textScale)
+        local slotSize=font("slotSize",11*textScale)
+        if h>22 then layout.compact=false elseif h<18 then layout.compact=true end
+        if h>38 then layout.lines=2 elseif h<34 then layout.lines=1 end
+        if not layout.compact then
             text("Slot",tostring(move.slot or index),x+math.max(1,4*textScale),y+1,slotSize,false)
             local lines={}
             local current=""
@@ -2505,7 +2555,7 @@ local function mountPlayerESP()
             end
             if current~="" then lines[#lines+1]=current end
             if #lines==0 then lines={"Unknown"} end
-            local maxLines=h>=36 and 2 or 1
+            local maxLines=layout.lines
             if #lines>maxLines then lines[maxLines]=lines[maxLines]:sub(1,math.max(1,maxChars-2))..".." end
             local count=math.min(maxLines,#lines)
             local nameY=y+(h-count*(nameSize+1))/2
@@ -2517,14 +2567,14 @@ local function mountPlayerESP()
         end
         local state=not known and "UNKNOWN" or ready and "READY"
             or (seconds and (math.max(1,math.ceil(seconds-.000001)).."s") or "...")
-        local stateY=h<20 and y+(h-stateSize)/2 or y+h-stateSize-2
+        local stateY=layout.compact and y+(h-stateSize)/2 or y+h-stateSize-2
         text("State",state,x+w/2,stateY,stateSize,true)
     end
     local function updatePlayer(player,record,now,frame)
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.lastScale=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
+            hide(record);record.character=identity;record.bounds=nil;record.lastScale=nil;record.scaleFilter=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -2543,7 +2593,7 @@ local function mountPlayerESP()
         if not frame or frame.camera~=camera then frame=screenProjection(camera) end
         local point,visible,depth=project(rootPosition,camera,frame)
         if not point or (depth and depth<=0) then hide(record);return end
-        local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition,point,frame)
+        local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition,point,frame,now)
         local view=camera.ViewportSize
         local inside=point.X>=0 and point.Y>=0 and point.X<=view.X and point.Y<=view.Y
         if not left or right<0 or left>view.X or top+bodyHeight<0 or top>view.Y
