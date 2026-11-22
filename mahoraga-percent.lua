@@ -2349,8 +2349,8 @@ local function mountPlayerESP()
         return projectToScreen(position,camera,frame)
     end
     local function projectAnchor(record,position,camera,frame,now)
-        -- Reject isolated native projection samples before smoothing the shared
-        -- anchor continuously; every ESP element follows the same result.
+        -- Reject isolated native projection samples. Center and size are then
+        -- smoothed together once the complete pose has been measured.
         local samples,xs,ys={},{},{}
         for i=1,3 do
             local point,visible,depth=project(position,camera,frame)
@@ -2372,39 +2372,6 @@ local function mountPlayerESP()
             local error=math.abs(sample.x-x)+math.abs(sample.y-y)
             if not best or error<best then selected=sample;best=error end
         end
-        local previous=record.anchorSmooth
-        local reset=not previous or previous.camera~=camera or now<previous.time or now-previous.time>.25
-        if previous and not reset then
-            pcall(function() if (position-previous.worldPosition).Magnitude>12 then reset=true end end)
-            if frame and frame.position and previous.cameraPosition then
-                pcall(function() if (frame.position-previous.cameraPosition).Magnitude>12 then reset=true end end)
-            end
-        end
-        if reset then
-            previous={x=x,y=y,rawX=x,rawY=y,vx=0,vy=0,time=now,camera=camera}
-            record.anchorSmooth=previous
-        elseif now>previous.time then
-            local dt=math.min(.1,math.max(.0001,now-previous.time))
-            local function alpha(cutoff)
-                return 1/(1+1/(2*math.pi*cutoff*dt))
-            end
-            -- One Euro filtering: strong damping for small jitter, a faster
-            -- response during real motion. Both axes use the same blend factor.
-            local derivativeAlpha=alpha(7)
-            local vx=(x-previous.rawX)/dt
-            local vy=(y-previous.rawY)/dt
-            previous.vx=previous.vx+(vx-previous.vx)*derivativeAlpha
-            previous.vy=previous.vy+(vy-previous.vy)*derivativeAlpha
-            local speed=math.sqrt(previous.vx*previous.vx+previous.vy*previous.vy)
-            local cutoff=math.min(45,3+.04*speed)
-            local blend=alpha(cutoff)
-            previous.x=previous.x+(x-previous.x)*blend
-            previous.y=previous.y+(y-previous.y)*blend
-            previous.rawX=x;previous.rawY=y
-        end
-        previous.time=now;previous.worldPosition=position
-        previous.cameraPosition=frame and frame.position or nil
-        x,y=previous.x,previous.y
         return Vector2.new(x,y),selected.visible,selected.depth
     end
     local function object(record,key,kind)
@@ -2425,6 +2392,88 @@ local function mountPlayerESP()
         local d=object(record,key,"Square")
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
+    end
+    local function smoothESPPose(record,point,scale,worldPosition,camera,frame,now)
+        local previous=record.poseMotion
+        local logScale=math.log(scale)
+        local reset=not previous or previous.camera~=camera or now<previous.time or now-previous.time>.25
+        if previous and not reset then
+            if frame and frame.fov and previous.fov and math.abs(frame.fov-previous.fov)>3 then reset=true end
+            pcall(function() if (worldPosition-previous.worldPosition).Magnitude>12 then reset=true end end)
+            if frame and frame.position and previous.cameraPosition then
+                pcall(function() if (frame.position-previous.cameraPosition).Magnitude>12 then reset=true end end)
+            end
+            if math.abs(point.X-previous.x)>300 or math.abs(point.Y-previous.y)>300 then reset=true end
+        end
+        if reset then
+            previous={camera=camera,time=now,x=point.X,y=point.Y,l=logScale,samples={}}
+            record.poseMotion=previous
+        end
+        local samples=previous.samples
+        if #samples==0 or now>samples[#samples].time then
+            samples[#samples+1]={x=point.X,y=point.Y,l=logScale,time=now}
+        end
+        while #samples>11 or (#samples>3 and now-samples[1].time>.1) do table.remove(samples,1) end
+        local function fit(list)
+            local n,st,stt,sx,sy,sl,stx,sty,stl=#list,0,0,0,0,0,0,0,0
+            for _,sample in ipairs(list) do
+                local t=sample.time-now
+                st=st+t;stt=stt+t*t
+                sx=sx+sample.x;sy=sy+sample.y;sl=sl+sample.l
+                stx=stx+t*sample.x;sty=sty+t*sample.y;stl=stl+t*sample.l
+            end
+            local denominator=n*stt-st*st
+            if n<3 or denominator<=.000000001 then
+                return {x=point.X,y=point.Y,l=logScale,vx=0,vy=0,vl=0}
+            end
+            local vx=(n*stx-st*sx)/denominator
+            local vy=(n*sty-st*sy)/denominator
+            local vl=(n*stl-st*sl)/denominator
+            return {x=(sx-vx*st)/n,y=(sy-vy*st)/n,l=(sl-vl*st)/n,vx=vx,vy=vy,vl=vl}
+        end
+        local trajectory=fit(samples)
+        local residuals={}
+        for _,sample in ipairs(samples) do
+            local t=sample.time-now
+            local dx=sample.x-(trajectory.x+trajectory.vx*t)
+            local dy=sample.y-(trajectory.y+trajectory.vy*t)
+            local ds=(sample.l-(trajectory.l+trajectory.vl*t))*80
+            residuals[#residuals+1]=math.sqrt(dx*dx+dy*dy+ds*ds)
+        end
+        table.sort(residuals)
+        local noise=residuals[math.floor((#residuals+1)/2)] or 0
+        local threshold=math.max(1,noise*2.5)
+        local clean={}
+        for _,sample in ipairs(samples) do
+            local t=sample.time-now
+            local dx=sample.x-(trajectory.x+trajectory.vx*t)
+            local dy=sample.y-(trajectory.y+trajectory.vy*t)
+            local ds=(sample.l-(trajectory.l+trajectory.vl*t))*80
+            if dx*dx+dy*dy+ds*ds<=threshold*threshold then clean[#clean+1]=sample end
+        end
+        if #clean>=3 then trajectory=fit(clean) end
+        -- Only predict sustained movement, not alternating one-frame noise.
+        local span=math.max(.001,now-samples[1].time)
+        if math.sqrt(trajectory.vx^2+trajectory.vy^2)*span<math.max(1,noise*2.5) then
+            trajectory.vx=0;trajectory.vy=0
+        end
+        local dt=math.max(0,math.min(.1,now-previous.time))
+        if dt>0 then
+            local response=55
+            local blend=1-math.exp(-response*dt)
+            -- Short motion compensation avoids the trailing of a plain low-pass.
+            local lead=math.min(.012,dt/(math.exp(response*dt)-1))
+            local tx=trajectory.x+trajectory.vx*lead
+            local ty=trajectory.y+trajectory.vy*lead
+            local tl=trajectory.l+math.max(-2.5,math.min(2.5,trajectory.vl))*lead
+            previous.x=previous.x+(tx-previous.x)*blend
+            previous.y=previous.y+(ty-previous.y)*blend
+            previous.l=previous.l+(tl-previous.l)*blend
+        end
+        previous.time=now;previous.worldPosition=worldPosition
+        previous.cameraPosition=frame and frame.position or nil
+        previous.fov=frame and frame.fov or nil
+        return Vector2.new(previous.x,previous.y),math.exp(previous.l)
     end
     local function bodyBounds(record,character,root,camera,rootPosition,rootPoint,frame,now)
         -- Read sizes rather than animated limb positions. Refresh on every draw so
@@ -2486,40 +2535,9 @@ local function mountPlayerESP()
             if top and bottom then scale=math.abs(bottom.Y-top.Y)/(upper+lower) end
             if not number(scale) or scale<.1 then scale=record.lastScale or 12 end
         end
-        -- Smooth size independently; placement uses the shared adaptive anchor.
+        -- Filter center and size as one pose, keeping every bar and card together.
         now=now or (tick and tick() or os.clock())
-        local filter=record.scaleFilter
-        local reset=not filter or filter.camera~=camera or now<filter.time or now-filter.time>.25
-        if not reset and frame and frame.fov and filter.fov and math.abs(frame.fov-filter.fov)>3 then reset=true end
-        if not reset then
-            pcall(function() if (center-filter.worldPosition).Magnitude>12 then reset=true end end)
-            if frame and frame.position and filter.cameraPosition then
-                pcall(function() if (frame.position-filter.cameraPosition).Magnitude>12 then reset=true end end)
-            end
-        end
-        if reset then
-            filter={camera=camera,value=scale,time=now,samples={}}
-            record.scaleFilter=filter
-        end
-        local samples=filter.samples
-        samples[#samples+1]={value=scale,time=now}
-        while #samples>5 or (#samples>1 and now-samples[1].time>.12) do table.remove(samples,1) end
-        local values={}
-        for _,sample in ipairs(samples) do values[#values+1]=sample.value end
-        table.sort(values)
-        local count=#values
-        local target=count%2==0 and (values[count/2]+values[count/2+1])/2 or values[(count+1)/2]
-        local dt=math.max(0,math.min(.1,now-filter.time))
-        local difference=math.log(target/filter.value)
-        if math.abs(difference)>.000001 then
-            local change=difference*(1-math.exp(-18*dt))
-            local maximum=2.5*dt
-            filter.value=filter.value*math.exp(math.max(-maximum,math.min(maximum,change)))
-        end
-        filter.time=now;filter.worldPosition=center
-        filter.cameraPosition=frame and frame.position or nil
-        filter.fov=frame and frame.fov or nil
-        scale=filter.value
+        point,scale=smoothESPPose(record,point,scale,center,camera,frame,now)
         record.lastScale=scale
         local height=(upper+lower)*scale
         if height<3 then height=3;scale=height/(upper+lower) end
@@ -2630,7 +2648,7 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.anchorSmooth=nil;record.lastScale=nil;record.scaleFilter=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
+            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
