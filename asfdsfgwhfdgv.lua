@@ -1091,12 +1091,15 @@ local function mountBlockWatcher()
     local move=page:Dropdown({Name="Move key",Options={"1","2","3","4"},Default="1",Flag="auto_unblock_move"})
     local range=page:Slider({Name="Maximum distance (studs)",Min=1,Max=500,Default=25,Increment=1,Flag="auto_unblock_range"})
     local status=page:Paragraph({Name="Detection status",Content="Off"})
+    local activeStatus=page:Paragraph({Name="Last active status",Content="No active check yet"})
     local stopped=false
     local context,fired=nil,false
     local nextRosterRead,rosterSignature=0,nil
     local lastMessage
     local function message(text)
         if text~=lastMessage then status:Set(text);lastMessage=text end
+        local ok,menuOpen=pcall(function() return window:IsOpen() end)
+        if ok and not menuOpen and activeStatus.Content~=text then activeStatus:Set(text) end
     end
     local function refreshTargets(now)
         if now<nextRosterRead then return end
@@ -1131,26 +1134,59 @@ local function mountBlockWatcher()
         return nil
     end
     local function moveReady(player,character,slot)
-        -- Respect the game's exact readiness attribute when it is exposed.
-        -- Do not interpret an arbitrary cooldown number as a percentage.
+        -- SlotN children are absent on some live character kits. They cannot
+        -- be a prerequisite for pressing a user-selected key.
+        local hudName
+        pcall(function()
+            local gui=player:FindFirstChild("PlayerGui")
+            local hud=gui and gui:FindFirstChild("HUD")
+            local moves=hud and hud:FindFirstChild("Moves")
+            local row=moves and moves:FindFirstChild(tostring(slot))
+            local label=row and row:FindFirstChild("TextLabel")
+            if label and type(label.Text)=="string" and label.Text~="" then
+                hudName=label.Text:gsub("<.->","")
+            end
+        end)
+        local function readiness(skill)
+            local ok,value=pcall(function() return skill:GetAttribute("COOLDOWN") end)
+            if ok and type(value)=="number" and value==value and value>=0 and value<=20 then
+                return value>=19.999
+            end
+            return nil
+        end
+        local function matchesHUD(skill,config)
+            if not hudName then return false end
+            if tostring(skill.Name)==hudName then return true end
+            for _,key in ipairs({"NewName","ChangedName","AirVar","AttackVariant","EvasiveVariant","RunVar","BlockVar","MoveVar","NeutralVar"}) do
+                local alias=config:FindFirstChild(key)
+                if alias then
+                    local ok,value=pcall(function() return alias.Value end)
+                    if ok and value==hudName then return true end
+                end
+            end
+            return false
+        end
+        local slotMatch
         local containers={player:FindFirstChild("Backpack"),character}
         for i=1,2 do
             local container=containers[i]
             if container then
                 for _,skill in ipairs(container:GetChildren()) do
                     local config=skill:FindFirstChild(".Config")
-                    if config and config:FindFirstChild("Slot"..tostring(slot)) then
-                        local ok,value=pcall(function() return skill:GetAttribute("COOLDOWN") end)
-                        if ok and type(value)=="number" and value==value and value>=0 and value<=20 then
-                            return value>=19.999
-                        end
-                        return true
+                    if config then
+                        if matchesHUD(skill,config) then return readiness(skill) end
+                        if config:FindFirstChild("Slot"..tostring(slot)) then slotMatch=skill end
+                        local value=config:FindFirstChild("Slot")
+                        local ok,index=pcall(function() return value and value.Value end)
+                        if ok and tonumber(index)==slot then slotMatch=skill end
                     end
                 end
             end
         end
-        -- Missing/streaming move data must not consume the unblock window.
-        return false
+        if slotMatch then return readiness(slotMatch) end
+        -- Unknown readiness is not the same as an active cooldown. Let Roblox
+        -- handle the chosen key instead of silently blocking unsupported kits.
+        return nil
     end
     local function updateWatcher(now)
         if stopped or not alive then return end
@@ -1174,7 +1210,7 @@ local function mountBlockWatcher()
         local blocking=blockingState(character)
         if blocking==nil then message("Waiting for readable blocking state");return end
         if blocking then fired=false;message("Watching: target is blocking");return end
-        if fired then message("Move sent · waiting for another block");return end
+        if fired then message("Pressed move "..tostring(slot).." · waiting for another block");return end
         local root=character:FindFirstChild("HumanoidRootPart")
         local ownRoot=ownCharacter:FindFirstChild("HumanoidRootPart")
         local humanoid=character:FindFirstChildOfClass("Humanoid")
@@ -1189,14 +1225,14 @@ local function mountBlockWatcher()
         if not menuOK or menuOpen or not macroInputAllowed() then message("Paused: menu, focus, chat or whitelist");return end
         if macroBusy then message("Paused during macro");return end
         if type(keypress)~="function" or type(keyrelease)~="function" then message("Keyboard APIs unavailable");return end
-        if not moveReady(me,ownCharacter,slot) then message("Waiting for selected move");return end
+        if moveReady(me,ownCharacter,slot)==false then message("Waiting for selected move cooldown");return end
         if suspendInputBuffer then suspendInputBuffer() end
         macroBusy=true
         local key=0x30+slot
         local ok,err=pcall(macroTap,key)
         if macroHeldKeys[key] then pcall(keyrelease,key);macroHeldKeys[key]=nil end
         macroBusy=false
-        if ok then fired=true;message("Move sent · waiting for another block")
+        if ok then fired=true;message("Pressed move "..tostring(slot).." · waiting for another block")
         else enabled:Set(false);message("Stopped: "..tostring(err)) end
     end
     local heartbeat=game:GetService("RunService").Heartbeat:Connect(function()
