@@ -1606,7 +1606,7 @@ local function mountPlayerESP()
     local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
     local records={}
     local drawingValues={}
-    local stopped,elapsed=false,0
+    local stopped=false
     local capture
     local heartbeat
     local green=Color3.fromRGB(90,245,125)
@@ -2236,40 +2236,41 @@ local function mountPlayerESP()
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
     end
-    local function bodyBounds(character,head,camera)
-        -- Project the head and feet so the lines follow the rig and camera zoom.
-        -- Only inspect body parts: accessories and effects must not stretch bars.
-        local headHalf=.5
-        pcall(function() headHalf=head.Size.Y/2 end)
-        local top=project(head.Position+Vector3.new(0,headHalf+.15,0),camera)
-        if not top or not number(top.X) or not number(top.Y) then return nil end
-        local bottom
-        for _,name in ipairs({"LeftFoot","RightFoot","Left Leg","Right Leg"}) do
-            local foot=child(character,name)
-            if foot then
-                local half=1
-                pcall(function() half=foot.Size.Y/2 end)
-                local point=project(foot.Position-Vector3.new(0,half,0),camera)
-                if point and number(point.Y) and (not bottom or point.Y>bottom.Y) then bottom=point end
-            end
+    local function bodyBounds(record,character,root,camera)
+        -- Cache rig dimensions, never animated limb positions or accessories.
+        if not record.bounds then
+            local rootHalf,headHeight,torsoWidth,armWidth,legHeight,hip=1,1,2,1,2,0
+            pcall(function() rootHalf=root.Size.Y/2 end)
+            local head=child(character,"Head")
+            local torso=child(character,"UpperTorso") or child(character,"Torso")
+            local arm=child(character,"LeftUpperArm") or child(character,"Left Arm")
+            local leg=child(character,"Left Leg") or child(character,"Right Leg")
+            local hum=character:FindFirstChildOfClass("Humanoid")
+            pcall(function() headHeight=head.Size.Y end)
+            pcall(function() torsoWidth=torso.Size.X end)
+            pcall(function() armWidth=arm.Size.X end)
+            pcall(function() legHeight=leg.Size.Y end)
+            pcall(function() hip=hum.HipHeight end)
+            local r15=child(character,"LeftFoot") or child(character,"RightFoot")
+            record.bounds={
+                upper=rootHalf+headHeight+.5,
+                lower=rootHalf+(r15 and math.max(0,hip) or legHeight+math.max(0,hip)),
+                halfWidth=torsoWidth/2+armWidth+.15,
+            }
         end
-        if not bottom then bottom=project(head.Position-Vector3.new(0,5,0),camera) end
-        if not bottom or not number(bottom.Y) then return nil end
-        local height=bottom.Y-top.Y
+        local bounds=record.bounds
+        local center=root.Position
+        -- One root position and one camera basis keep the box rigid during turns.
+        local up=camera.CFrame.UpVector
+        local right=camera.CFrame.RightVector
+        local topLeft=project(center+up*bounds.upper-right*bounds.halfWidth,camera)
+        local bottomRight=project(center-up*bounds.lower+right*bounds.halfWidth,camera)
+        if not topLeft or not bottomRight then return nil end
+        if not number(topLeft.X) or not number(topLeft.Y)
+            or not number(bottomRight.X) or not number(bottomRight.Y) then return nil end
+        local height=bottomRight.Y-topLeft.Y
         if height<3 or height>camera.ViewportSize.Y*4 then return nil end
-        local center=top.X
-        local left,right=center-height*.32,center+height*.32
-        for _,name in ipairs({"HumanoidRootPart","Torso","UpperTorso","Left Arm","Right Arm","LeftUpperArm","RightUpperArm"}) do
-            local part=child(character,name)
-            if part then
-                local point=project(part.Position,camera)
-                if point and number(point.X) then
-                    left=math.min(left,point.X-height*.12)
-                    right=math.max(right,point.X+height*.12)
-                end
-            end
-        end
-        return left,right,top.Y,height
+        return topLeft.X,bottomRight.X,topLeft.Y,height
     end
     local function verticalMeter(record,key,ratio,x,top,height,color)
         -- Keep a small percentage just outside each vertical mode line.
@@ -2292,21 +2293,22 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
+            hide(record);record.character=identity;record.bounds=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
         if teamFilter.Value and me and playerKey(player)~=playerKey(me) and me.Team~=nil and player.Team==me.Team then hide(record);return end
         local head=child(character,"Head") or child(character,"HumanoidRootPart")
+        local root=child(character,"HumanoidRootPart") or child(character,"UpperTorso") or child(character,"Torso")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         local camera=world.CurrentCamera
-        if not head or not camera or (humanoid and humanoid.Health<=0) then hide(record);return end
+        if not head or not root or not camera or (humanoid and humanoid.Health<=0) then hide(record);return end
         local okDistance,distance=pcall(function()
             local origin=child(me and me.Character,"HumanoidRootPart")
             return (head.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
         end)
         if okDistance and number(distance) and distance>range.Value then hide(record);return end
-        local point,visible=project(head.Position+Vector3.new(0,3,0),camera)
+        local point,visible=project(root.Position+camera.CFrame.UpVector*3,camera)
         if not point or not visible then hide(record);return end
         -- Do not read point.Z: Matcha's Vector2 projections do not expose it.
         if now>=record.nextRead then
@@ -2335,7 +2337,7 @@ local function mountPlayerESP()
             if record.mode2~=nil then
                 label(record,"mode2",string.format("Second Mode: %.2f%%",record.mode2*100),x,y,green);y=y+18
             end
-            local left,right,top,bodyHeight=bodyBounds(character,head,camera)
+            local left,right,top,bodyHeight=bodyBounds(record,character,root,camera)
             if left then
                 verticalMeter(record,"mode",ratio,left-5,top,bodyHeight,modeRed)
                 if record.mode2~=nil then
@@ -2359,11 +2361,8 @@ local function mountPlayerESP()
         end
         for key,d in pairs(record.drawings) do if not record.used[key] then set(d,"Visible",false) end end
     end
-    heartbeat=RunService.Heartbeat:Connect(function(dt)
+    local function renderESP()
         if stopped or not alive then return end
-        elapsed=elapsed+(tonumber(dt) or .05)
-        if elapsed<.05 then return end
-        elapsed=0
         local now=tick and tick() or os.clock()
         local present={}
         local ok,list=pcall(function() return Players:GetPlayers() end)
@@ -2396,7 +2395,13 @@ local function mountPlayerESP()
         local removed={}
         for player in pairs(records) do if not present[player] then removed[#removed+1]=player end end
         for _,player in ipairs(removed) do release(records[player]);records[player]=nil end
+    end
+    -- Update geometry with the rendered camera; data reads still use nextRead.
+    local connected,connection=pcall(function()
+        return RunService.RenderStepped:Connect(renderESP)
     end)
+    if connected and connection then heartbeat=connection
+    else heartbeat=RunService.Heartbeat:Connect(renderESP) end
     return function()
         if stopped then return end
         stopped=true
