@@ -2042,26 +2042,26 @@ local function mountPlayerESP()
             series.high=cd;series.progressAt=now;series.paused=false
         end
         series.last=cd;series.seen=now
-        local stallLimit=math.max(.45,math.min(2,(series.cadence or .1)*2))
+        local stallLimit=math.max(.75,math.min(3,(series.cadence or .5)*3))
         series.paused=now-(series.progressAt or now)>stallLimit
         local points=series.points
-        if #points==0 or now-points[#points].time>=.025 then
+        if #points==0 or (math.abs(cd-points[#points].cd)>.001 and now-points[#points].time>=.025) then
             points[#points+1]={cd=cd,time=now}
             while #points>32 or (#points>2 and now-points[1].time>1.6) do table.remove(points,1) end
         end
         if series.paused then series.endsAt=nil;series.rate=nil end
-        if not series.paused and #points>=6 and now-points[1].time>=.6 then
+        if not series.paused and #points>=2 and now-points[1].time>=.15 then
             local slopes={}
             for i=1,#points-1 do
                 for j=i+1,#points do
                     local dt=points[j].time-points[i].time
-                    if dt>=.25 then
+                    if dt>=.1 then
                         local rate=(points[j].cd-points[i].cd)/dt
                         if rate>.01 and rate<=400 then slopes[#slopes+1]=rate end
                     end
                 end
             end
-            if #slopes>=6 then
+            if #slopes>=1 then
                 local function median(values)
                     table.sort(values)
                     local n=#values
@@ -2071,8 +2071,16 @@ local function mountPlayerESP()
                 local rate=median(slopes)
                 local low=slopes[math.max(1,math.floor(#slopes*.25))]
                 local high=slopes[math.max(1,math.floor(#slopes*.75))]
-                if (high-low)/rate<=.2 then
-                    local first=points[1]
+                local first=points[1]
+                local span=now-first.time
+                local gain=cd-first.cd
+                local consistent=#slopes<6 or (high-low)/rate<=.5
+                -- Coarse/unevenly replicated meters can lack a tight slope cluster.
+                -- Their longer observed span still gives a useful seconds estimate.
+                if not consistent and span>=.4 and gain>.05 then
+                    rate=gain/span;consistent=rate>.01 and rate<=400
+                end
+                if consistent then
                     local intercepts={}
                     for _,point in ipairs(points) do intercepts[#intercepts+1]=point.cd-rate*(point.time-first.time) end
                     local candidate=first.time+(20-median(intercepts))/rate
@@ -2159,9 +2167,14 @@ local function mountPlayerESP()
                         if ok and type(value)=="string" and value~="" then name=value end
                     end
                     local cd,source=readCooldown(move)
-                    if not number(cd) or source=="ready default" then
-                        local hud=hudCooldown(player,slot,tostring(name))
-                        if number(hud) then cd,source=hud,"HUD" end
+                    local hud=hudCooldown(player,slot,tostring(name))
+                    local previous=record and record.cooldowns[tostring(identity)]
+                    local primary=previous and previous.sources and previous.sources[source]
+                    local stalled=primary and number(cd) and number(primary.last)
+                        and cd<=primary.last+.02 and now-(primary.progressAt or now)>.35
+                    if number(hud) and (not number(cd) or source=="ready default"
+                        or (stalled and math.abs(hud-cd)>.15)) then
+                        cd,source=hud,"HUD"
                     end
                     if not number(cd) then cd,source=nil,"unavailable" end
                     -- NewName can change with charges/variants; the underlying move
@@ -2381,16 +2394,20 @@ local function mountPlayerESP()
         -- Keep a small percentage just outside each vertical mode line.
         local percentKey=key.."Percent"
         local percent=object(record,percentKey,"Text")
-        set(percent,"Size",12)
+        local uiScale=math.min(1,math.max(.3,height/160))
+        set(percent,"Size",math.max(6,math.floor(12*uiScale+.5)))
         set(percent,"Center",true)
-        local percentX=key=="mode2" and x+22 or x-22
+        local percentGap=math.max(7,22*uiScale)
+        local percentX=key=="mode2" and x+percentGap or x-percentGap
+        local lineWidth=math.max(1,2*uiScale)
+        local borderWidth=math.max(.5,uiScale)
         local value=ratio~=nil and string.format("%.0f%%",math.max(0,math.min(1,ratio))*100) or "--%"
         label(record,percentKey,value,percentX,top,color)
-        square(record,key.."Outline",x-1,top-1,4,height+2,Color3.fromRGB(15,15,18))
+        square(record,key.."Outline",x-borderWidth,top-borderWidth,lineWidth+borderWidth*2,height+borderWidth*2,Color3.fromRGB(15,15,18))
         set(record.drawings[key.."Outline"],"ZIndex",900)
         if ratio~=nil then
             local fill=height*math.max(0,math.min(1,ratio))
-            square(record,key.."Fill",x,top+height-fill,2,fill,color)
+            square(record,key.."Fill",x,top+height-fill,lineWidth,fill,color)
             set(record.drawings[key.."Fill"],"ZIndex",901)
         end
     end
@@ -2423,33 +2440,42 @@ local function mountPlayerESP()
             set(d,"Size",size);set(d,"Center",center);set(d,"ZIndex",903)
             label(record,key..suffix,text,tx,ty,white)
         end
-        text("Slot",tostring(move.slot or index),x+4,y+2,11,false)
-        local lines={}
-        local current=""
-        local name=tostring(move.name or "Unknown")
-        for token in name:gmatch("%S+") do
-            local word=token
-            while #word>10 do
-                if current~="" then lines[#lines+1]=current;current="" end
-                lines[#lines+1]=word:sub(1,10);word=word:sub(11)
+        local textScale=math.min(1,w/64,h/64)
+        local nameSize=math.max(4,math.floor(10*textScale+.5))
+        local stateSize=math.max(4,math.floor(9*textScale+.5))
+        local slotSize=math.max(4,math.floor(11*textScale+.5))
+        if h>=20 then
+            text("Slot",tostring(move.slot or index),x+math.max(1,4*textScale),y+1,slotSize,false)
+            local lines={}
+            local current=""
+            local maxChars=math.max(3,math.floor((w-4)/(nameSize*.6)))
+            local name=tostring(move.name or "Unknown")
+            for token in name:gmatch("%S+") do
+                local word=token
+                while #word>maxChars do
+                    if current~="" then lines[#lines+1]=current;current="" end
+                    lines[#lines+1]=word:sub(1,maxChars);word=word:sub(maxChars+1)
+                end
+                if #current+#word+1>maxChars and current~="" then
+                    lines[#lines+1]=current;current=word
+                else current=current=="" and word or current.." "..word end
             end
-            if #current+#word+1>10 and current~="" then
-                lines[#lines+1]=current;current=word
-            else current=current=="" and word or current.." "..word end
+            if current~="" then lines[#lines+1]=current end
+            if #lines==0 then lines={"Unknown"} end
+            local maxLines=h>=36 and 2 or 1
+            if #lines>maxLines then lines[maxLines]=lines[maxLines]:sub(1,math.max(1,maxChars-2))..".." end
+            local count=math.min(maxLines,#lines)
+            local nameY=y+(h-count*(nameSize+1))/2
+            for row=1,count do text("Name"..row,lines[row],x+w/2,nameY+(row-1)*(nameSize+1),nameSize,true) end
         end
-        if current~="" then lines[#lines+1]=current end
-        if #lines==0 then lines={"Unknown"} end
-        if #lines>2 then lines[2]=lines[2]:sub(1,7).."..." end
-        local count=math.min(2,#lines)
-        local nameY=y+12+math.max(0,(h-27-count*11)/2)
-        for row=1,count do text("Name"..row,lines[row],x+w/2,nameY+(row-1)*11,10,true) end
         local seconds=number(move.cooldownSeconds) and move.cooldownSeconds or nil
         if not seconds and number(move.cooldownEndsAt) and number(now) then
             seconds=math.max(0,move.cooldownEndsAt-now)
         end
         local state=not known and "UNKNOWN" or ready and "READY"
             or (seconds and (math.max(1,math.ceil(seconds-.000001)).."s") or "...")
-        text("State",state,x+w/2,y+h-12,9,true)
+        local stateY=h<20 and y+(h-stateSize)/2 or y+h-stateSize-2
+        text("State",state,x+w/2,stateY,stateSize,true)
     end
     local function updatePlayer(player,record,now,frame)
         local character=player.Character
@@ -2505,17 +2531,20 @@ local function mountPlayerESP()
         end
         if movesOn.Value then
             local count=math.max(1,#record.moves)
-            local gap,pad=4,4
-            local boxWidth=math.min(64,math.max(1,view.X-pad*2))
-            local boxHeight=math.min(64,math.max(1,view.Y-pad*2))
+            local cardSize=math.max(8,math.min(64,bodyHeight*.38))
+            local cardScale=cardSize/64
+            local gap,pad=math.max(1,4*cardScale),4
+            local boxWidth=math.min(cardSize,math.max(1,view.X-pad*2))
+            local boxHeight=math.min(cardSize,math.max(1,view.Y-pad*2))
             local rows=math.min(count,math.max(1,math.floor((view.Y-pad*2+gap)/(boxHeight+gap))))
             local columns=math.ceil(count/rows)
             local columnGap=math.min(gap,math.max(0,(view.X-pad*2)/math.max(1,columns*2)))
             boxWidth=math.min(boxWidth,math.max(1,(view.X-pad*2-(columns-1)*columnGap)/columns))
             local stackWidth=columns*boxWidth+(columns-1)*columnGap
             local stackHeight=rows*boxHeight+(rows-1)*gap
-            local rightX=right+46
-            local leftX=left-46-stackWidth
+            local sideGap=math.max(10,46*cardScale)
+            local rightX=right+sideGap
+            local leftX=left-sideGap-stackWidth
             local rightFits=rightX+stackWidth<=view.X-pad
             local leftFits=leftX>=pad
             local side=record.boxSide or "right"
