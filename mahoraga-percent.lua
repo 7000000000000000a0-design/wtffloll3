@@ -2160,10 +2160,36 @@ local function mountPlayerESP()
     end
     local function cooldownSeconds(state,now)
         if not state or not state.active or not number(state.endsAt) then return nil end
-        local seconds=math.max(1,math.ceil(state.endsAt-now-.000001))
-        -- Small fit noise cannot bounce a number; confirmed extensions can correct it.
-        if state.displaySeconds and state.displayRevision==state.revision then
-            seconds=math.min(seconds,state.displaySeconds)
+        local remaining=math.max(0,state.endsAt-now)
+        local seconds=math.max(1,math.ceil(remaining-.000001))
+        if state.displayCycle~=state.cycle then
+            state.displayCycle=state.cycle
+            state.displaySeconds=nil;state.displayIncrease=nil
+        end
+        local previous=state.displaySeconds
+        if previous and seconds>previous then
+            local allowIncrease=false
+            -- Absorb small boundary corrections by holding the current number.
+            -- A real extension must persist, rather than be one revised estimate.
+            if remaining-previous>=.75 then
+                local pending=state.displayIncrease
+                if not pending or math.abs(state.endsAt-pending.endsAt)>.2 then
+                    pending={since=now,endsAt=state.endsAt,count=1}
+                    state.displayIncrease=pending
+                else
+                    pending.count=pending.count+1
+                    pending.endsAt=pending.endsAt*.8+state.endsAt*.2
+                end
+                local fraction=remaining-math.floor(remaining)
+                local awayFromBoundary=fraction>=.25 or fraction<.000001
+                if pending.count>=5 and now-pending.since>=.6 and awayFromBoundary then
+                    allowIncrease=true
+                    state.displayIncrease=nil
+                end
+            else state.displayIncrease=nil end
+            if not allowIncrease then seconds=previous end
+        else
+            state.displayIncrease=nil
         end
         state.displaySeconds=seconds;state.displayRevision=state.revision
         return seconds
@@ -2640,9 +2666,6 @@ local function mountPlayerESP()
             for row=1,count do text("Name"..row,lines[row],x+w/2,nameY+(row-1)*(nameSize+1),nameSize,true) end
         end
         local seconds=number(move.cooldownSeconds) and move.cooldownSeconds or nil
-        if not seconds and number(move.cooldownEndsAt) and number(now) then
-            seconds=math.max(0,move.cooldownEndsAt-now)
-        end
         local state=not known and "UNKNOWN" or ready and "READY"
             or (seconds and (math.max(1,math.ceil(seconds-.000001)).."s") or "...")
         local stateY=layout.compact and y+(h-stateSize)/2 or y+h-stateSize-2
