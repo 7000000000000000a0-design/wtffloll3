@@ -1149,11 +1149,17 @@ local function mountBlockWatcher()
     end
     enabled.Callback=function(on) if not on then resetWatch() end end
     local nextRosterRead,rosterSignature=0,nil
-    local lastMessage
+    local lastMessage,lastActiveMessage
     local function message(text)
-        if text~=lastMessage then status:Set(text);lastMessage=text end
+        if text~=lastMessage then
+            local ok=pcall(function() status:Set(text) end)
+            if ok then lastMessage=text end
+        end
         local ok,menuOpen=pcall(function() return window:IsOpen() end)
-        if ok and not menuOpen and activeStatus.Content~=text then activeStatus:Set(text) end
+        if ok and not menuOpen and lastActiveMessage~=text then
+            local updated=pcall(function() activeStatus:Set(text) end)
+            if updated then lastActiveMessage=text end
+        end
     end
     local function refreshTargets(now)
         if now<nextRosterRead then return end
@@ -1273,14 +1279,20 @@ local function mountBlockWatcher()
         -- handle the chosen key instead of silently blocking unsupported kits.
         return nil
     end
+    local function characterIdentity(character)
+        local ok,address=pcall(function() return character.Address end)
+        if ok and type(address)=="number" and address>0 then return address end
+        return character
+    end
     local function updateWatcher(now)
         if stopped or not alive then return end
-        refreshTargets(now)
         if heldKey then
             local menuOK,menuOpen=pcall(function() return window:IsOpen() end)
             local allowedOK,allowed=pcall(macroInputAllowed,true)
             if now>=releaseAt or not activationHeld() or not menuOK or menuOpen or not allowedOK or not allowed then releaseMoveKey() end
         end
+        -- A temporary dropdown refresh failure must not stop input cleanup or detection.
+        pcall(refreshTargets,now)
         if not enabled.Value then resetWatch();message("Off");return end
         if not activationHeld() then resetWatch();message("Hold the detection key to arm");return end
         local name=tostring(target.Value)
@@ -1296,15 +1308,27 @@ local function mountBlockWatcher()
         if isPlayerWhitelisted(chosen) then resetWatch();message("Paused: selected player is whitelisted");return end
         local character=chosen.Character
         local ownCharacter=me and me.Character
-        if not character or not ownCharacter then message("Waiting for characters");return end
+        if not character or not ownCharacter then resetWatch();message("Waiting for characters");return end
         local slot=tonumber(move.Value)
-        if not slot or slot<1 or slot>4 or slot%1~=0 then message("Choose move key 1–4");return end
+        if not slot or slot<1 or slot>4 or slot%1~=0 then resetWatch();message("Choose move key 1–4");return end
         if activation.Value==0x30+slot then
             resetWatch();message("Choose a hold key different from the move key");return
         end
         local identity=whitelistIdentity(chosen)
-        local current=tostring(identity)..":"..tostring(character.Address)..":"..tostring(ownCharacter.Address)..":"..tostring(slot)
-        if context~=current then resetWatch();context=current end
+        local targetCharacter,localCharacter=characterIdentity(character),characterIdentity(ownCharacter)
+        if not context or context.player~=identity or context.character~=targetCharacter
+            or context.ownCharacter~=localCharacter or context.slot~=slot or context.holdKey~=activation.Value then
+            resetWatch()
+            context={player=identity,character=targetCharacter,ownCharacter=localCharacter,slot=slot,holdKey=activation.Value}
+        end
+        local root=character:FindFirstChild("HumanoidRootPart")
+        local ownRoot=ownCharacter:FindFirstChild("HumanoidRootPart")
+        local humanoid=character:FindFirstChildOfClass("Humanoid")
+        local ownHumanoid=ownCharacter:FindFirstChildOfClass("Humanoid")
+        if not root or not ownRoot or not humanoid or not ownHumanoid
+            or humanoid.Health<=0 or ownHumanoid.Health<=0 then
+            resetWatch();message("Waiting for living characters");return
+        end
         local blocking=blockingState(character)
         if blocking==nil then
             previousBlocking=nil;openingAt=nil
@@ -1322,12 +1346,6 @@ local function mountBlockWatcher()
         if now-openingAt>openingLifetime then
             openingAt=nil;message("Opening passed · waiting for another block");return
         end
-        local root=character:FindFirstChild("HumanoidRootPart")
-        local ownRoot=ownCharacter:FindFirstChild("HumanoidRootPart")
-        local humanoid=character:FindFirstChildOfClass("Humanoid")
-        local ownHumanoid=ownCharacter:FindFirstChildOfClass("Humanoid")
-        if not root or not ownRoot or not humanoid or not ownHumanoid
-            or humanoid.Health<=0 or ownHumanoid.Health<=0 then message("Waiting for living characters");return end
         local distance=(root.Position-ownRoot.Position).Magnitude
         if type(distance)~="number" or distance~=distance or distance>tonumber(range.Value) then
             message("Target outside maximum distance");return
@@ -1336,7 +1354,9 @@ local function mountBlockWatcher()
         if not menuOK or menuOpen or not macroInputAllowed(true) then message("Paused: menu, focus, chat or whitelist");return end
         if macroBusy then message("Paused during macro");return end
         if type(keypress)~="function" or type(keyrelease)~="function" then message("Keyboard APIs unavailable");return end
-        if moveReady(me,ownCharacter,slot)==false then message("Waiting for selected move cooldown");return end
+        local readyOK,ready=pcall(moveReady,me,ownCharacter,slot)
+        if not readyOK then message("Retrying selected move data");return end
+        if ready==false then message("Waiting for selected move cooldown");return end
         -- Recheck at dispatch: do not send a late key after a slow lookup or
         -- after the target has already raised their guard again.
         local dispatchTime=tick and tick() or os.clock()
@@ -1357,14 +1377,14 @@ local function mountBlockWatcher()
             fired=true;openingAt=nil
             message("Pressed move "..tostring(slot).." on unblock")
         else
-            releaseMoveKey();enabled:Set(false)
-            message("Stopped: "..tostring(err))
+            resetWatch()
+            message("Input failed; waiting for another block: "..tostring(err))
         end
     end
     local function poll()
         if stopped or not alive then releaseMoveKey();return end
         local ok,err=pcall(updateWatcher,tick and tick() or os.clock())
-        if not ok then releaseMoveKey();message("Detection error: "..tostring(err)) end
+        if not ok then resetWatch();message("Retrying detection: "..tostring(err)) end
     end
     local heartbeat
     if task and type(task.spawn)=="function" and type(task.wait)=="function" then
