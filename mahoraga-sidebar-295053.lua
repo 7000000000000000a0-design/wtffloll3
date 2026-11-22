@@ -3375,12 +3375,7 @@ local function mountPlayerESP()
             if data.mode2~=nil and data.showMode2 then
                 -- The third row is exclusively the actual secondary-mode reading.
                 sidebarMeter(row,"Mode2",data.mode2,x+4*scale,y+62*scale,width-8*scale,12*scale,10,secondPurple,scale)
-                local percent=object(row,"Mode2Percent","Text")
-                set(percent,"Size",math.max(7,math.floor(10*scale+.5)))
-                set(percent,"Center",true)
-                set(percent,"ZIndex",904)
-                label(row,"Mode2Percent",string.format("2nd mode %.0f%%",math.max(0,math.min(1,data.mode2))*100),
-                    x+width/2,y+63*scale,white)
+
             end
             for key,drawing in pairs(row.drawings) do
                 if not row.used[key] then set(drawing,"Visible",false) end
