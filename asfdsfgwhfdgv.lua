@@ -851,6 +851,7 @@ local macroBindings={
     {trigger=0x54,first=0x32,second=0x34,delay=.040},
     {trigger=0x5A,first=0x33,second=0x31,delay=.040},
     {trigger=0x58,first=0x33,second=0x34,delay=.040},
+    {trigger=0x43,first=0x32,second=0x32,delay=.040},
 }
 local function robloxFocused()
     if type(isrbxactive)~="function" then return false end
