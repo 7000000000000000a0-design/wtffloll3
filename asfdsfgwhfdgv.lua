@@ -997,14 +997,14 @@ local function macroTap(vk)
 end
 local function mountInputBuffer()
     local page=window:Tab("Input Buffer")
-    page:Paragraph({Name="Hold to repeat",Content="Hold 1–4 or either mouse button to repeat at a 20 ms target interval. Release to stop. Close the menu while playing."})
+    page:Paragraph({Name="Hold to repeat",Content="Choose inputs below, then hold 1–4, G or a mouse button to repeat at a 20 ms target interval. Release to stop. Close the menu while playing."})
     local status=page:Paragraph({Name="Input status",Content="Off"})
     local held={}
     local stopped=false
     local repeatInterval=.020
     local inputs={
-        {key=0x31},{key=0x32},{key=0x33},{key=0x34},
-        {key=0x01,mouse=1},{key=0x02,mouse=2}
+        {key=0x31,name="1"},{key=0x32,name="2"},{key=0x33,name="3"},{key=0x34,name="4"},
+        {key=0x47,name="G"},{key=0x01,mouse=1,name="M1"},{key=0x02,mouse=2,name="M2"}
     }
     local function releaseInput(input)
         if input.mouse==1 then
@@ -1030,6 +1030,17 @@ local function mountInputBuffer()
             toggle:Set(not toggle.Value)
             pcall(showToggleNotice,toggle.Value,"Input buffer")
         end})
+    for _,input in ipairs(inputs) do
+        local selected=input
+        selected.toggle=page:Toggle({Name="Buffer "..selected.name,Default=true,
+            Flag="input_buffer_input_"..selected.name:lower(),Callback=function(on)
+                if not on then
+                    local state=held[selected.key]
+                    if state and state.owned then releaseInput(selected) end
+                    held[selected.key]=nil
+                end
+            end})
+    end
     local lastStatus
     local function message(text)
         if text~=lastStatus then status:Set(text);lastStatus=text end
@@ -1058,7 +1069,11 @@ local function mountInputBuffer()
         if type(iskeypressed)~="function" then releaseAll();message("Key-state API unavailable");return end
         local missing=false
         for _,input in ipairs(inputs) do
-            if supported(input) then
+            if not input.toggle.Value then
+                local state=held[input.key]
+                if state and state.owned then releaseInput(input) end
+                held[input.key]=nil
+            elseif supported(input) then
                 local downOK,down=pcall(iskeypressed,input.key)
                 local state=held[input.key]
                 if not downOK or down~=true then
