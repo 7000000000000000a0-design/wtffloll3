@@ -367,7 +367,7 @@ local destroyMahoragaCounter
 local destroyPlayerESP
 local destroyPlayersTab
 local destroyInputBuffer,suspendInputBuffer
-local destroyBlockWatcher
+local destroyBlockWatcher,blockDetectionHeld,blockDetectionClaimsKey
 
 local function message(text)
     if text ~= lastStatus then lastStatus=text;  end
@@ -876,7 +876,10 @@ local function robloxTextFocused()
     if chatOK and chatFocused == false then return false end
 end
 
-local function macroInputAllowed()
+local function macroInputAllowed(forBlockDetection)
+    -- Reserve the held detection key for this feature. In particular, default C
+    -- must not also run Aizen's 2 > 2 macro while block detection is armed.
+    if not forBlockDetection and blockDetectionHeld and blockDetectionHeld() then return false end
     if whitelistBlocksInput() then return false end
     if not robloxFocused() then return false end
     local focused = robloxTextFocused()
@@ -1019,6 +1022,14 @@ local function mountInputBuffer()
     end
     local toggle=page:Toggle({Name="20 ms input buffer",Default=false,Flag="input_buffer_25ms",
         Callback=function(on) if not on then releaseAll() end end})
+    local toggleKey
+    toggleKey=page:Keybind({Name="Toggle input buffer",Default="F3",Mode="Press",Flag="input_buffer_toggle_key",
+        Callback=function()
+            if stopped or not alive or not robloxFocused() or robloxTextFocused() then return end
+            if blockDetectionClaimsKey and blockDetectionClaimsKey(toggleKey and toggleKey.Value) then return end
+            toggle:Set(not toggle.Value)
+            pcall(showToggleNotice,toggle.Value,"Input buffer")
+        end})
     local lastStatus
     local function message(text)
         if text~=lastStatus then status:Set(text);lastStatus=text end
@@ -1085,8 +1096,19 @@ destroyInputBuffer,suspendInputBuffer=mountInputBuffer()
 
 local function mountBlockWatcher()
     local page=window:Tab("Block Detection")
-    page:Paragraph({Name="Use a move when unblocked",Content="Press the selected move as soon as the watched player changes from blocking to unblocked, within range. Waits for a fresh block cycle. Aim the move yourself."})
-    local enabled=page:Toggle({Name="Auto move on unblock",Default=false,Flag="auto_unblock_enabled"})
+    page:Paragraph({Name="Use a move when unblocked",Content="Enable detection, then hold its key while the target blocks. Presses the chosen move when they unblock within range. Releasing the hold key cancels detection. Aim the move yourself."})
+    local enabled=page:Toggle({Name="Enable block detection",Default=false,Flag="auto_unblock_enabled"})
+    local activation=page:Keybind({Name="Hold detection",Default="C",Mode="Hold",Flag="auto_unblock_hold_key"})
+    local function activationHeld()
+        if not enabled.Value or not activation.Value then return false end
+        if type(iskeypressed)=="function" then
+            local ok,down=pcall(iskeypressed,activation.Value)
+            return ok and down==true
+        end
+        return activation.State==true
+    end
+    blockDetectionHeld=activationHeld
+    blockDetectionClaimsKey=function(key) return enabled.Value and activation.Value~=nil and key==activation.Value end
     local target=page:Dropdown({Name="Target player",Options={"Select a player"},Default="Select a player",Flag="auto_unblock_target"})
     local move=page:Dropdown({Name="Move key",Options={"1","2","3","4"},Default="1",Flag="auto_unblock_move"})
     local range=page:Slider({Name="Maximum distance (studs)",Min=1,Max=500,Default=25,Increment=1,Flag="auto_unblock_range"})
@@ -1210,10 +1232,11 @@ local function mountBlockWatcher()
         refreshTargets(now)
         if heldKey then
             local menuOK,menuOpen=pcall(function() return window:IsOpen() end)
-            local allowedOK,allowed=pcall(macroInputAllowed)
-            if now>=releaseAt or not enabled.Value or not menuOK or menuOpen or not allowedOK or not allowed then releaseMoveKey() end
+            local allowedOK,allowed=pcall(macroInputAllowed,true)
+            if now>=releaseAt or not activationHeld() or not menuOK or menuOpen or not allowedOK or not allowed then releaseMoveKey() end
         end
         if not enabled.Value then resetWatch();message("Off");return end
+        if not activationHeld() then resetWatch();message("Hold the detection key to arm");return end
         local name=tostring(target.Value)
         if cachedName~=name or cachedRoster~=rosterPlayers then
             cachedName=name;cachedRoster=rosterPlayers;cachedPlayer=nil
@@ -1230,6 +1253,9 @@ local function mountBlockWatcher()
         if not character or not ownCharacter then message("Waiting for characters");return end
         local slot=tonumber(move.Value)
         if not slot or slot<1 or slot>4 or slot%1~=0 then message("Choose move key 1–4");return end
+        if activation.Value==0x30+slot then
+            resetWatch();message("Choose a hold key different from the move key");return
+        end
         local identity=whitelistIdentity(chosen)
         local current=tostring(identity)..":"..tostring(character.Address)..":"..tostring(ownCharacter.Address)..":"..tostring(slot)
         if context~=current then resetWatch();context=current end
@@ -1261,7 +1287,7 @@ local function mountBlockWatcher()
             message("Target outside maximum distance");return
         end
         local menuOK,menuOpen=pcall(function() return window:IsOpen() end)
-        if not menuOK or menuOpen or not macroInputAllowed() then message("Paused: menu, focus, chat or whitelist");return end
+        if not menuOK or menuOpen or not macroInputAllowed(true) then message("Paused: menu, focus, chat or whitelist");return end
         if macroBusy then message("Paused during macro");return end
         if type(keypress)~="function" or type(keyrelease)~="function" then message("Keyboard APIs unavailable");return end
         if moveReady(me,ownCharacter,slot)==false then message("Waiting for selected move cooldown");return end
@@ -1308,6 +1334,7 @@ local function mountBlockWatcher()
     else heartbeat=game:GetService("RunService").Heartbeat:Connect(poll) end
     return function()
         stopped=true;resetWatch()
+        blockDetectionHeld=nil;blockDetectionClaimsKey=nil
         if heartbeat then pcall(function() heartbeat:Disconnect() end) end
     end
 end
@@ -4191,3 +4218,4 @@ destroyMahoragaCounter = mountMahoragaCounter()
 
 
 print("[hahahahahaha] Loaded. Open Timings for Nanami, Camera Timings and Kokushibo, or Head Ride for Head Ride controls. Right Shift shows/hides the menu.")
+
