@@ -2345,6 +2345,35 @@ local function mountPlayerESP()
         end
         record.drawings={}
     end
+    local function project(position,camera,frame)
+        return projectToScreen(position,camera,frame)
+    end
+    local function projectAnchor(record,position,camera,frame,now)
+        -- Reject isolated native projection samples. Center and size are then
+        -- smoothed together once the complete pose has been measured.
+        local samples,xs,ys={},{},{}
+        for i=1,3 do
+            local point,visible,depth=project(position,camera,frame)
+            if point and number(point.X) and number(point.Y) then
+                samples[#samples+1]={x=point.X,y=point.Y,visible=visible,depth=depth}
+                xs[#xs+1]=point.X;ys[#ys+1]=point.Y
+            end
+        end
+        if #samples==0 then return nil,false end
+        local function median(values)
+            table.sort(values)
+            local n=#values
+            if n%2==0 then return (values[n/2]+values[n/2+1])/2 end
+            return values[(n+1)/2]
+        end
+        local x,y=median(xs),median(ys)
+        local selected,best
+        for _,sample in ipairs(samples) do
+            local error=math.abs(sample.x-x)+math.abs(sample.y-y)
+            if not best or error<best then selected=sample;best=error end
+        end
+        return Vector2.new(x,y),selected.visible,selected.depth
+    end
     local function object(record,key,kind)
         local d=record.drawings[key]
         if d then return d end
@@ -2363,6 +2392,162 @@ local function mountPlayerESP()
         local d=object(record,key,"Square")
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
+    end
+    local function smoothESPPose(record,point,scale,worldPosition,camera,frame,now)
+        local previous=record.poseMotion
+        local logScale=math.log(scale)
+        local reset=not previous or previous.camera~=camera or now<previous.time or now-previous.time>.25
+        if previous and not reset then
+            if frame and frame.fov and previous.fov and math.abs(frame.fov-previous.fov)>3 then reset=true end
+            pcall(function() if (worldPosition-previous.worldPosition).Magnitude>12 then reset=true end end)
+            if frame and frame.position and previous.cameraPosition then
+                pcall(function() if (frame.position-previous.cameraPosition).Magnitude>12 then reset=true end end)
+            end
+            if math.abs(point.X-previous.x)>300 or math.abs(point.Y-previous.y)>300 then reset=true end
+        end
+        if reset then
+            previous={camera=camera,time=now,x=point.X,y=point.Y,l=logScale,samples={}}
+            record.poseMotion=previous
+        end
+        local samples=previous.samples
+        if #samples==0 or now>samples[#samples].time then
+            samples[#samples+1]={x=point.X,y=point.Y,l=logScale,time=now}
+        end
+        while #samples>11 or (#samples>3 and now-samples[1].time>.1) do table.remove(samples,1) end
+        local function fit(list)
+            local n,st,stt,sx,sy,sl,stx,sty,stl=#list,0,0,0,0,0,0,0,0
+            for _,sample in ipairs(list) do
+                local t=sample.time-now
+                st=st+t;stt=stt+t*t
+                sx=sx+sample.x;sy=sy+sample.y;sl=sl+sample.l
+                stx=stx+t*sample.x;sty=sty+t*sample.y;stl=stl+t*sample.l
+            end
+            local denominator=n*stt-st*st
+            if n<3 or denominator<=.000000001 then
+                return {x=point.X,y=point.Y,l=logScale,vx=0,vy=0,vl=0}
+            end
+            local vx=(n*stx-st*sx)/denominator
+            local vy=(n*sty-st*sy)/denominator
+            local vl=(n*stl-st*sl)/denominator
+            return {x=(sx-vx*st)/n,y=(sy-vy*st)/n,l=(sl-vl*st)/n,vx=vx,vy=vy,vl=vl}
+        end
+        local trajectory=fit(samples)
+        local residuals={}
+        for _,sample in ipairs(samples) do
+            local t=sample.time-now
+            local dx=sample.x-(trajectory.x+trajectory.vx*t)
+            local dy=sample.y-(trajectory.y+trajectory.vy*t)
+            local ds=(sample.l-(trajectory.l+trajectory.vl*t))*80
+            residuals[#residuals+1]=math.sqrt(dx*dx+dy*dy+ds*ds)
+        end
+        table.sort(residuals)
+        local noise=residuals[math.floor((#residuals+1)/2)] or 0
+        local threshold=math.max(1,noise*2.5)
+        local clean={}
+        for _,sample in ipairs(samples) do
+            local t=sample.time-now
+            local dx=sample.x-(trajectory.x+trajectory.vx*t)
+            local dy=sample.y-(trajectory.y+trajectory.vy*t)
+            local ds=(sample.l-(trajectory.l+trajectory.vl*t))*80
+            if dx*dx+dy*dy+ds*ds<=threshold*threshold then clean[#clean+1]=sample end
+        end
+        if #clean>=3 then trajectory=fit(clean) end
+        -- Only predict sustained movement, not alternating one-frame noise.
+        local span=math.max(.001,now-samples[1].time)
+        if math.sqrt(trajectory.vx^2+trajectory.vy^2)*span<math.max(1,noise*2.5) then
+            trajectory.vx=0;trajectory.vy=0
+        end
+        local dt=math.max(0,math.min(.1,now-previous.time))
+        if dt>0 then
+            local response=55
+            local blend=1-math.exp(-response*dt)
+            -- Short motion compensation avoids the trailing of a plain low-pass.
+            local lead=math.min(.012,dt/(math.exp(response*dt)-1))
+            local tx=trajectory.x+trajectory.vx*lead
+            local ty=trajectory.y+trajectory.vy*lead
+            local tl=trajectory.l+math.max(-2.5,math.min(2.5,trajectory.vl))*lead
+            previous.x=previous.x+(tx-previous.x)*blend
+            previous.y=previous.y+(ty-previous.y)*blend
+            previous.l=previous.l+(tl-previous.l)*blend
+        end
+        previous.time=now;previous.worldPosition=worldPosition
+        previous.cameraPosition=frame and frame.position or nil
+        previous.fov=frame and frame.fov or nil
+        local anchorX=point.X+math.max(-.75,math.min(.75,previous.x-point.X))
+        local anchorY=point.Y+math.max(-.75,math.min(.75,previous.y-point.Y))
+        local fittedScale=math.exp(previous.l)
+        fittedScale=math.max(scale*.98,math.min(scale*1.02,fittedScale))
+        return Vector2.new(anchorX,anchorY),fittedScale
+    end
+    local function bodyBounds(record,character,root,camera,rootPosition,rootPoint,frame,now)
+        -- Read sizes rather than animated limb positions. Refresh on every draw so
+        -- transforms, scaling and late-loading rig parts immediately update bounds.
+        local function dimension(part,axis,fallback)
+            local ok,value=pcall(function() return part.Size[axis] end)
+            if ok and number(value) and value>0 then return value end
+            return fallback
+        end
+        local head=child(character,"Head")
+        local torso=child(character,"UpperTorso") or child(character,"Torso")
+        local arm=child(character,"LeftUpperArm") or child(character,"Left Arm")
+        local leg=child(character,"Left Leg") or child(character,"Right Leg")
+        local foot=child(character,"LeftFoot") or child(character,"RightFoot")
+        local rootHalf=dimension(root,"Y",2)/2
+        local headHeight=dimension(head,"Y",1)
+        local legHeight=dimension(leg,"Y",2)
+        if foot then
+            legHeight=dimension(child(character,"LeftUpperLeg"),"Y",1)
+                +dimension(child(character,"LeftLowerLeg"),"Y",1)+dimension(foot,"Y",1)
+        end
+        local hip
+        pcall(function()
+            local hum=character:FindFirstChildOfClass("Humanoid")
+            if number(hum.HipHeight) and hum.HipHeight>=0 then hip=hum.HipHeight end
+        end)
+        local upper=rootHalf+headHeight+.5
+        local lower=rootHalf+(foot and (hip or legHeight) or legHeight+(hip or 0))
+        local halfWidth=dimension(torso,"X",2)/2+dimension(arm,"X",1)+.15
+        record.bounds={upper=upper,lower=lower,halfWidth=halfWidth}
+        local center=rootPosition or root.Position
+        local point=rootPoint or project(center,camera,frame)
+        if not point or not number(point.X) or not number(point.Y) then return nil end
+        frame=frame or screenProjection(camera)
+        local scale
+        -- Derive size from one captured camera pose, not differences between
+        -- screen projections sampled at different points in camera motion.
+        if frame and frame.focal then
+            local depth
+            if frame.matrix then
+                local m=frame.matrix
+                depth=-((center.X-m[1])*m[6]+(center.Y-m[2])*m[9]+(center.Z-m[3])*m[12])
+            elseif frame.position and frame.forward then
+                pcall(function()
+                    local relative=center-frame.position
+                    depth=relative.X*frame.forward.X+relative.Y*frame.forward.Y+relative.Z*frame.forward.Z
+                end)
+            end
+            if (not number(depth) or depth<=.01) and frame.position then
+                pcall(function() depth=(center-frame.position).Magnitude end)
+            end
+            if number(depth) and depth>.01 then scale=frame.focal/depth end
+        end
+        if not number(scale) or scale<=0 then
+            -- Older runners may not expose camera basis/FOV. This is only a size
+            -- fallback; the position still comes from the single root projection.
+            local top=project(center+Vector3.new(0,upper,0),camera,frame)
+            local bottom=project(center-Vector3.new(0,lower,0),camera,frame)
+            if top and bottom then scale=math.abs(bottom.Y-top.Y)/(upper+lower) end
+            if not number(scale) or scale<.1 then scale=record.lastScale or 12 end
+        end
+        -- Filter center and size as one pose, keeping every bar and card together.
+        now=now or (tick and tick() or os.clock())
+        point,scale=smoothESPPose(record,point,scale,center,camera,frame,now)
+        record.lastScale=scale
+        local height=(upper+lower)*scale
+        if height<3 then height=3;scale=height/(upper+lower) end
+        if not number(height) or height<=0 then return nil end
+        return point.X-halfWidth*scale,point.X+halfWidth*scale,
+            point.Y-upper*scale,math.max(3,height)
     end
     local function verticalMeter(record,key,ratio,x,top,height,color)
         -- Keep a small percentage just outside each vertical mode line.
@@ -2463,51 +2648,35 @@ local function mountPlayerESP()
         local stateY=layout.compact and y+(h-stateSize)/2 or y+h-stateSize-2
         text("State",state,x+w/2,stateY,stateSize,true)
     end
-    local function fixedHUDPosition(record,view)
-        if not record.hudSlot then
-            local occupied={}
-            for _,other in pairs(records) do
-                if other.hudSlot then occupied[other.hudSlot]=true end
-            end
-            local slot=1
-            while occupied[slot] do slot=slot+1 end
-            record.hudSlot=slot
-        end
-        -- Positions depend only on the screen and a permanent player slot.
-        -- Neither distance, camera motion, rig pose nor player-list order is used.
-        local topMargin=math.max(40,math.min(192,view.Y*.22))
-        local rowStep,columnStep=240,208
-        local rows=math.max(1,math.floor((view.Y-topMargin-16)/rowStep))
-        local index=record.hudSlot-1
-        local row=index%rows
-        local column=math.floor(index/rows)
-        local x=view.X-196-column*columnStep
-        local y=topMargin+row*rowStep
-        return x,y
-    end
-    local function updatePlayer(player,record,now)
+    local function updatePlayer(player,record,now,frame)
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.moveTextLayouts=nil
-            record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
-            -- Keep hudSlot across respawns so the panel never changes places.
+            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={};record.lastMovesRead=nil
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
-        if teamFilter.Value and me and playerKey(player)~=playerKey(me)
-            and me.Team~=nil and player.Team==me.Team then hide(record);return end
+        if teamFilter.Value and me and playerKey(player)~=playerKey(me) and me.Team~=nil and player.Team==me.Team then hide(record);return end
+        local head=child(character,"Head") or child(character,"HumanoidRootPart")
         local root=child(character,"HumanoidRootPart") or child(character,"UpperTorso") or child(character,"Torso")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         local camera=world.CurrentCamera
-        if not root or not camera or (humanoid and humanoid.Health<=0) then hide(record);return end
+        if not head or not root or not camera or (humanoid and humanoid.Health<=0) then hide(record);return end
         local okDistance,distance=pcall(function()
             local origin=child(me and me.Character,"HumanoidRootPart")
-            return (root.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
+            return (head.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
         end)
         if okDistance and number(distance) and distance>range.Value then hide(record);return end
+        local rootPosition=root.Position
+        if not frame or frame.camera~=camera then frame=screenProjection(camera) end
+        local point,visible,depth=projectAnchor(record,rootPosition,camera,frame,now)
+        if not point or (depth and depth<=0) then hide(record);return end
+        local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition,point,frame,now)
+        local view=camera.ViewportSize
+        local inside=point.X>=0 and point.Y>=0 and point.X<=view.X and point.Y<=view.Y
+        if not left or right<0 or left>view.X or top+bodyHeight<0 or top>view.Y
+            or (visible==false and inside) then hide(record);return end
         if now>=record.nextRead then
-            record.mode=nil;record.mode2=nil;record.moves={}
             if modeOn.Value then
                 local success,value=pcall(readMode,player,character)
                 if success then record.mode=value end
@@ -2516,35 +2685,39 @@ local function mountPlayerESP()
             end
             if movesOn.Value then
                 local success,value=pcall(readMoves,player,character,record,now)
-                if success then record.moves=value end
+                if success and type(value)=="table" and #value>0 then
+                    record.moves=value;record.lastMovesRead=now
+                elseif not record.lastMovesRead or now-record.lastMovesRead>.5 then
+                    record.moves={}
+                end
             end
             record.nextRead=now+.05
         end
         record.used={}
-        local x,top=fixedHUDPosition(record,camera.ViewportSize)
-        local caption=tostring(player.DisplayName or player.Name)
-        if #caption>22 then caption=caption:sub(1,19).."..." end
-        local name=object(record,"hudPlayer","Text")
-        set(name,"Size",12)
-        label(record,"hudPlayer",caption,x-12,top-20,white)
-        local cardSize,gap,rows=48,4,4
-        local barHeight=cardSize*rows+gap*(rows-1)
         if modeOn.Value then
-            verticalMeter(record,"mode",record.mode,x+22,top,barHeight,modeRed)
-            if record.mode2~=nil then
-                verticalMeter(record,"mode2",record.mode2,x+30,top,barHeight,secondPurple)
+            local ratio=record.mode
+            if left then
+                verticalMeter(record,"mode",ratio,left-5,top,bodyHeight,modeRed)
+                if record.mode2~=nil then
+                    verticalMeter(record,"mode2",record.mode2,right+3,top,bodyHeight,secondPurple)
+                end
             end
         end
         if movesOn.Value then
-            local boxX=x+76
+            local cardSize=math.max(8,math.min(64,bodyHeight*.38))
+            local cardScale=cardSize/64
+            local gap=math.max(1,4*cardScale)
+            -- Stable player-relative offsets. Do not flip sides or clamp the
+            -- stack against the screen edge independently of the character.
+            local boxX=right+math.max(10,46*cardScale)
+            local boxY=top
             if #record.moves==0 then
-                moveBox(record,1,{name="Moves",source="unknown"},boxX,top,cardSize,cardSize,now)
+                moveBox(record,1,{name="Moves",source="unknown"},boxX,boxY,cardSize,cardSize,now)
             else
                 for i,move in ipairs(record.moves) do
-                    local slot=number(move.slot) and move.slot>=1 and move.slot<=8 and move.slot%1==0 and move.slot or i
-                    local column=math.floor((slot-1)/rows)
-                    local row=(slot-1)%rows
-                    moveBox(record,i,move,boxX+column*(cardSize+gap),top+row*(cardSize+gap),cardSize,cardSize,now)
+                    local slot=number(move.slot) and move.slot>=1 and move.slot<=99
+                        and move.slot%1==0 and move.slot or i
+                    moveBox(record,i,move,boxX,boxY+(slot-1)*(cardSize+gap),cardSize,cardSize,now)
                 end
             end
         end
@@ -2554,6 +2727,7 @@ local function mountPlayerESP()
         if stopped or not alive then return end
         local now=tick and tick() or os.clock()
         local present={}
+        local frame=screenProjection(world.CurrentCamera)
         local ok,list=pcall(function() return Players:GetPlayers() end)
         if not ok then for _,record in pairs(records) do hide(record) end;return end
         for _,player in ipairs(list) do
@@ -2562,7 +2736,7 @@ local function mountPlayerESP()
                 present[identity]=true
                 local record=records[identity]
                 if not record then record={drawings={},nextRead=0,moves={}};records[identity]=record end
-                local success,err=pcall(updatePlayer,player,record,now)
+                local success,err=pcall(updatePlayer,player,record,now,frame)
                 if not success then
                     hide(record)
                     local message=tostring(err)
