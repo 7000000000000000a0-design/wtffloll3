@@ -2207,6 +2207,97 @@ local function mountPlayerESP()
         end
         return nil
     end
+    -- Game source: LocalCharacterScriptNew.UpdateMoveNames uses
+    -- move:HasTag("Guardbreaks"), or that tag on the selected variant value.
+    local guardCollection
+    pcall(function() guardCollection=game:GetService("CollectionService") end)
+    local taggedGuardMoves,nextGuardScan={},0
+    local function refreshGuardbreakTags(now)
+        now=now or (tick and tick() or os.clock())
+        if now<nextGuardScan then return end
+        nextGuardScan=now+.25
+        local ok,items=pcall(function() return guardCollection:GetTagged("Guardbreaks") end)
+        if ok and type(items)=="table" then
+            local found={}
+            for _,item in ipairs(items) do found[characterKey(item)]=true end
+            taggedGuardMoves=found
+        end
+    end
+    local function gameTag(instance,tag)
+        if not instance then return nil end
+        if tag=="Guardbreaks" and taggedGuardMoves[characterKey(instance)] then return true end
+        local knownFalse=false
+        local ok,value=pcall(function() return instance:HasTag(tag) end)
+        if ok and type(value)=="boolean" then
+            if value then return true end
+            knownFalse=true
+        end
+        local tagsOK,tags=pcall(function() return instance:GetTags() end)
+        if tagsOK and type(tags)=="table" then
+            for key,value in pairs(tags) do
+                if value==tag or (key==tag and value==true) then return true end
+            end
+            knownFalse=true
+        end
+        local collectionOK,present=pcall(function() return guardCollection:HasTag(instance,tag) end)
+        if collectionOK and type(present)=="boolean" then
+            if present then return true end
+            knownFalse=true
+        end
+        if knownFalse then return false end
+        return nil
+    end
+    local function moveHUDRow(player,slot)
+        if not slot then return nil end
+        return child(child(child(child(player,"PlayerGui"),"HUD"),"Moves"),tostring(slot))
+    end
+    local function valueOf(object)
+        if not object then return nil end
+        local ok,value=pcall(function() return object.Value end)
+        if ok then return value end
+    end
+    local function selectedMove(player,character,move,config,slot)
+        local name=valueOf(child(config,"NewName"))
+        if type(name)~="string" or name=="" then name=tostring(move.Name) end
+        -- The player's own visible HUD already resolves air/block/run variants.
+        local row=moveHUDRow(player,slot)
+        local ok,hudName=pcall(function() return child(row,"TextLabel").Text end)
+        if ok and type(hudName)=="string" and hudName~="" then
+            for _,key in ipairs({"AirVar","AttackVariant","EvasiveVariant","RunVar","BlockVar","MoveVar","NeutralVar"}) do
+                local variant=child(config,key)
+                if variant and valueOf(variant)==hudName then return hudName,variant end
+            end
+            if hudName==name or hudName==valueOf(child(config,"ChangedName")) then return hudName,move end
+        end
+        -- Mirror the source's variant priority when replicated state is exposed.
+        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        local air=false
+        pcall(function()
+            local current=tostring(humanoid:GetState())
+            air=current:find("Freefall",1,true)~=nil or current:find("Jumping",1,true)~=nil
+        end)
+        local moving
+        pcall(function() moving=humanoid.MoveDirection.Magnitude>0 end)
+        local running=guardbreakBoolean(attribute(character,"Running"))
+            or guardbreakBoolean(attribute(character,"Sprinting"))
+            or guardbreakBoolean(valueOf(child(character,"Running")))
+        local blocking=guardbreakBoolean(valueOf(child(character,"Blocking")))==true
+        local choices={
+            {"AirVar",air},
+            {"AttackVariant",gameTag(character,"AttackVariant")==true},
+            {"EvasiveVariant",gameTag(character,"creator")==true},
+            {"RunVar",running==true},
+            {"BlockVar",blocking},
+            {"MoveVar",moving==true},
+            {"NeutralVar",moving==false},
+        }
+        for _,choice in ipairs(choices) do
+            local variant=choice[2] and child(config,choice[1]) or nil
+            local title=valueOf(variant)
+            if variant and type(title)=="string" and title~="" then return title,variant end
+        end
+        return name,move
+    end
     local function hudGuardbreak(player,slot,name)
         if not slot then return nil end
         local rows=child(child(child(player,"PlayerGui"),"HUD"),"Moves")
@@ -2217,6 +2308,11 @@ local function mountPlayerESP()
         if titleOK and type(titleText)=="string" and titleText~="" and titleText~=name then return nil end
         local rowOK,rowVisible=pcall(function() return row.Visible end)
         if rowOK and rowVisible==false then return nil end
+        local info=child(row,"InfoTag")
+        if info then
+            local infoOK,visible=pcall(function() return info.Visible end)
+            if infoOK and type(visible)=="boolean" then return visible end
+        end
         local ok,labels=pcall(function() return row:GetChildren() end)
         if not ok or type(labels)~="table" then return nil end
         for _,label in ipairs(labels) do
@@ -2228,16 +2324,23 @@ local function mountPlayerESP()
         end
         return nil
     end
-    local function readGuardbreak(player,move,config,slot,name)
-        for _,container in ipairs({config,move}) do
+    local function readGuardbreak(player,move,config,slot,name,target)
+        local hud=hudGuardbreak(player,slot,name)
+        if hud~=nil then return hud end
+        -- UpdateMoves also listens to this exact attribute for runtime changes.
+        local override=guardbreakBoolean(attribute(move,"GUARDBREAKS"))
+        if override~=nil then return override end
+        target=target or move
+        local tagged=gameTag(target,"Guardbreaks")
+        if tagged~=nil then return tagged end
+        local containers=target==move and {config,move} or {target}
+        for _,container in ipairs(containers) do
             for _,key in ipairs(guardbreakKeys) do
                 local flag=guardbreakBoolean(attribute(container,key))
                 if flag~=nil then return flag end
                 local marker=child(container,key)
                 if marker then
                     local ok,value=pcall(function() return marker.Value end)
-                    -- Preserve an explicit false BoolValue instead of treating
-                    -- the marker's presence alone as enabled.
                     if ok then
                         local markerFlag=guardbreakBoolean(value)
                         if markerFlag~=nil then return markerFlag end
@@ -2247,10 +2350,11 @@ local function mountPlayerESP()
                 end
             end
         end
-        return hudGuardbreak(player,slot,name)
+        return nil
     end
     local function readMoves(player,character,record,now)
         local moves,seen={},{}
+        refreshGuardbreakTags(now)
         if record then record.cooldowns=record.cooldowns or {} end
         local present={}
         local foldersSeen={}
@@ -2276,12 +2380,7 @@ local function mountPlayerESP()
                         local candidate=numeric(config,"Slot")
                         if number(candidate) and candidate>=1 and candidate<=99 and candidate%1==0 then slot=candidate end
                     end
-                    local name=move.Name
-                    local rename=child(config,"NewName")
-                    if rename then
-                        local ok,value=pcall(function() return rename.Value end)
-                        if ok and type(value)=="string" and value~="" then name=value end
-                    end
+                    local name,guardTarget=selectedMove(player,character,move,config,slot)
                     local cd,source=readCooldown(move)
                     local hud=hudCooldown(player,slot,tostring(name))
                     local previous=record and record.cooldowns[tostring(identity)]
@@ -2298,8 +2397,7 @@ local function mountPlayerESP()
                     local key=tostring(identity)
                     present[key]=true
                     moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,
-                        source=source,instance=identity,
-                        guardbreak=readGuardbreak(player,move,config,slot,tostring(name))}
+                        source=source,instance=identity,moveObject=move,moveConfig=config}
                 elseif depth>0 and move.ClassName=="Folder" and move.Name~=".Config" then
                     scan(move,depth-1)
                 end
@@ -2322,6 +2420,13 @@ local function mountPlayerESP()
             end
         end
         for _,move in ipairs(moves) do
+            -- Resolve again after inferred slots are assigned, so the correct
+            -- HUD variant/InfoTag also works for moves lacking Slot markers.
+            if move.moveObject then
+                local title,target=selectedMove(player,character,move.moveObject,move.moveConfig,move.slot)
+                move.name=title
+                move.guardbreak=readGuardbreak(player,move.moveObject,move.moveConfig,move.slot,title,target)
+            end
             if move.guardbreak==nil then move.guardbreak=hudGuardbreak(player,move.slot,move.name) end
             if record then
                 move.cd,move.source=trackCooldown(record.cooldowns,tostring(move.instance),move.cd,move.source,now)
