@@ -1932,7 +1932,6 @@ local function mountPlayerESP()
     local espTab=window:Tab("ESP")
     local modeOn=espTab:Toggle({Name="Mode bar ESP",Default=true,Flag="player_mode_esp"})
     local sidebarOn=espTab:Toggle({Name="Mode bars on screen side",Default=false,Flag="mode_screen_sidebar"})
-    local sidebarPage=espTab:Slider({Name="Sidebar page",Min=1,Max=20,Default=1,Increment=1,Flag="mode_sidebar_page"})
     local movesOn=espTab:Toggle({Name="Move cooldown ESP",Default=true,Flag="player_move_esp"})
     local selfOn=espTab:Toggle({Name="Show yourself",Default=false,Flag="player_esp_show_self"})
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
@@ -3475,7 +3474,7 @@ local function mountPlayerESP()
         end
         -- Alphabetical order is independent of camera direction and distance.
         table.sort(entries,function(a,b) return a.identity<b.identity end)
-        local layout=sidebarLayout(view.X,view.Y,#entries,tonumber(sidebarPage.Value) or 1)
+        local layout=sidebarLayout(view.X,view.Y,#entries,1)
         local scale=layout.scale
         local green=Color3.fromRGB(0,255,0)
         local cyan=Color3.fromRGB(70,200,230)
@@ -3514,7 +3513,7 @@ local function mountPlayerESP()
             local footer=object(sidebarFooter,"Page","Text")
             set(footer,"Size",math.max(8,math.floor(11*scale+.5)))
             set(footer,"Center",true)
-            label(sidebarFooter,"Page",string.format("Page %d/%d · Sidebar page in ESP settings",layout.page,layout.pages),
+            label(sidebarFooter,"Page",string.format("Showing %d of %d players",layout.last,#entries),
                 layout.left+layout.width/2,layout.top+layout.rows*layout.rowHeight,white)
         end
     end
