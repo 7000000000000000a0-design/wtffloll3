@@ -359,6 +359,44 @@ end
 local tab = window:Tab("Timings")
 
 local enabled, alive, clicked = false, true, false
+-- Matcha builds may omit RunService signals. Keep each subscription owned
+-- by this script and fall back to a cancellable task loop when necessary.
+local function connectFrame(signalName,callback,interval)
+    interval=interval or 1/60
+    local stopped,lastError=false,nil
+    local function dispatch(dt)
+        if stopped or not alive then return end
+        local ok,err=pcall(callback,dt)
+        if not ok and tostring(err)~=lastError then
+            lastError=tostring(err);print("[Update loop] "..lastError)
+        elseif ok then lastError=nil end
+    end
+    local ok,connection=pcall(function()
+        local service=game:GetService("RunService")
+        local signal=service and service[signalName]
+        if signal then return signal:Connect(dispatch) end
+    end)
+    if ok and connection then
+        return {Disconnect=function()
+            stopped=true;pcall(function() connection:Disconnect() end)
+        end}
+    end
+    local spawnFn=task and task.spawn or spawn
+    local waitFn=task and task.wait or wait
+    if type(spawnFn)~="function" or type(waitFn)~="function" then
+        print("[Update loop] No signal or task scheduler available for "..signalName)
+        return {Disconnect=function() stopped=true end}
+    end
+    spawnFn(function()
+        local previous=tick and tick() or os.clock()
+        while alive and not stopped do
+            waitFn(interval)
+            local now=tick and tick() or os.clock()
+            dispatch(math.max(0,now-previous));previous=now
+        end
+    end)
+    return {Disconnect=function() stopped=true end}
+end
 local lastNanamiClick=-math.huge
 local prompts = {}
 local connection, lastStatus, lastError
@@ -510,7 +548,7 @@ local function mountPlayersTab()
     end
     pcall(refreshRoster)
     local elapsed=0
-    local refreshConnection=game:GetService("RunService").Heartbeat:Connect(function(dt)
+    local refreshConnection=connectFrame("Heartbeat",function(dt)
         if stopped or not alive then return end
         elapsed=elapsed+(tonumber(dt) or .016)
         if elapsed<.75 then return end
@@ -1397,7 +1435,7 @@ local function mountBlockWatcher()
             end
             releaseMoveKey()
         end)
-    else heartbeat=game:GetService("RunService").Heartbeat:Connect(poll) end
+    else heartbeat=connectFrame("Heartbeat",poll) end
     return function()
         stopped=true;resetWatch()
         blockDetectionHeld=nil;blockDetectionClaimsKey=nil
@@ -1572,7 +1610,7 @@ end})
 macrosTab:Keybind({Name="Uptilt",Default="X",Flag="yusuke_uptilt_key",Mode="Press",
     Callback=function() runUptiltMacro("Yusuke", function() return yusukeOn end) end})
 
-connection=game:GetService("RunService").Heartbeat:Connect(function()
+connection=connectFrame("Heartbeat",function()
     pcall(updateMacroNotice)
     if not alive then return end
     local inputOK, acceptsInput = pcall(macroInputAllowed)
@@ -2098,12 +2136,12 @@ local function mountHeadRide()
         end
     end
 
-    connections[#connections + 1] = RunService.Heartbeat:Connect(function()
+    connections[#connections + 1] = connectFrame("Heartbeat",function()
         if not alive then return end
         if updateSource() == 0 then updateRide() end
     end)
 
-    connections[#connections + 1] = RunService.RenderStepped:Connect(function()
+    connections[#connections + 1] = connectFrame("RenderStepped",function()
         if not alive then return end
         if updateSource() == 1 then updateRide() end
     end)
@@ -2163,7 +2201,7 @@ local function mountHeadRide()
         return Color3.fromRGB(120, 220, 255)
     end
 
-    connections[#connections + 1] = RunService.RenderStepped:Connect(function()
+    connections[#connections + 1] = connectFrame("RenderStepped",function()
         if not alive then return end
         local showMarker = gv("ride_marker", true)
         local showTracer = gv("ride_tracer", false)
@@ -4019,9 +4057,9 @@ local function mountPlayerESP()
         end
     end)
     if not renderBinding then
-        pcall(function() renderConnection=RunService.RenderStepped:Connect(onRender) end)
+        pcall(function() renderConnection=connectFrame("RenderStepped",onRender) end)
     end
-    heartbeat=RunService.Heartbeat:Connect(function()
+    heartbeat=connectFrame("Heartbeat",function()
         if stopped or not alive then return end
         local now=tick and tick() or os.clock()
         if now-lastRenderSignal>.1 then renderESP() end
@@ -4195,9 +4233,11 @@ local function mountMahoragaCounter()
         return drawing
     end
     local function spinValue(character)
-        local value = character and character:FindFirstChild("WheelSpins")
-        if not value then return nil end
-        local ok, count = pcall(function() return value.Value end)
+        -- Character wrappers can briefly be unavailable during a respawn.
+        local ok,count=pcall(function()
+            local value=character and character:FindFirstChild("WheelSpins")
+            return value and value.Value
+        end)
         if ok and type(count)=="number" and count==count and count>=0 and count<math.huge then
             return count
         end
@@ -4255,7 +4295,7 @@ local function mountMahoragaCounter()
         end
         for _,player in ipairs(departed) do remove(player) end
     end
-    heartbeat = RunService.Heartbeat:Connect(function(dt)
+    heartbeat = connectFrame("Heartbeat",function(dt)
         if stopped or not alive then return end
         elapsed = elapsed + (tonumber(dt) or 0.1)
         if elapsed < 0.1 then return end
