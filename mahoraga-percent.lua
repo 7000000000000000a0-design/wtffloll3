@@ -1891,63 +1891,123 @@ local function mountPlayerESP()
     end
     local function trackCooldown(history,key,cd,source,now)
         local state=history[key]
-        if not state then state={points={}};history[key]=state end
+        if not state then state={points={},cycle=0};history[key]=state end
         local live=source=="HUD" or source=="attribute" or source=="component attribute"
             or source=="value" or source=="attribute fallback"
-        if live and number(cd) and cd>=0 and cd<=20 then
-            if cd>=20 then
-                state.active=false;state.last=20;state.seen=now;state.endsAt=nil
-                return cd,source
-            end
-            if not state.active or state.source~=source or (state.last and cd<state.last-.5) then
-                state.points={};state.active=true;state.rate=nil;state.endsAt=nil
-            end
-            state.source=source
-            local points=state.points
-            if #points==0 or cd~=points[#points].cd then
-                points[#points+1]={cd=cd,time=now}
-                while #points>40 or (#points>2 and now-points[1].time>1.25) do table.remove(points,1) end
-                local first=points[1]
-                local span=now-first.time
-                if (#points>=3 and span>=.2) or (#points==2 and span>=.35) then
-                    -- Fit the entire sample window, rather than a single frame delta.
-                    -- Relative times avoid loss of precision from large tick() values.
-                    local n,sx,sy,sxx,sxy=#points,0,0,0,0
-                    for _,point in ipairs(points) do
-                        local x=point.time-first.time
-                        sx=sx+x;sy=sy+point.cd;sxx=sxx+x*x;sxy=sxy+x*point.cd
-                    end
-                    local denominator=n*sxx-sx*sx
-                    if denominator>0 then
-                        local rate=(n*sxy-sx*sy)/denominator
-                        local intercept=(sy-rate*sx)/n
-                        local residual,total=0,0
-                        for _,point in ipairs(points) do
-                            local predicted=intercept+rate*(point.time-first.time)
-                            residual=residual+(point.cd-predicted)^2
-                            total=total+(point.cd-sy/n)^2
-                        end
-                        local reliable=rate>.01 and rate<=400 and total>0 and residual/total<=.04
-                        state.rate=reliable and rate or nil
-                        state.endsAt=reliable and (first.time+(20-intercept)/rate) or nil
-                    end
-                end
-            end
-            state.last=cd;state.seen=now
-            return cd,source
-        end
-        if state.active and state.last and state.seen then
-            -- A successful missing attribute can confirm readiness at the deadline.
-            if source=="ready default" and state.endsAt and now>=state.endsAt then
-                state.active=false;state.last=20;state.seen=now;state.endsAt=nil
-                return 20,source
-            end
-            if state.rate and now-state.seen<=.5 then
+        local function predicted()
+            if state.rate and state.seen and now-state.seen<=.5 then
                 return math.min(19.999,state.last+math.max(0,now-state.seen)*state.rate),"estimated"
             end
             return nil,"unavailable"
         end
+        local function start()
+            state.points={};state.active=true;state.rate=nil;state.endsAt=nil
+            state.source=source;state.pendingReset=nil;state.readySince=nil
+            state.cycle=state.cycle+1;state.displaySeconds=nil;state.fitAt=now
+        end
+        local function ready()
+            state.active=false;state.last=20;state.seen=now;state.endsAt=nil
+            state.readySince=nil;state.pendingReset=nil;state.displaySeconds=nil
+            return 20,source
+        end
+        -- Require repeated ready reads; one stale 20 must not flash READY.
+        local readyRead=(live and number(cd) and cd>=20 and cd<=20.001)
+            or (source=="ready default" and state.endsAt and now>=state.endsAt-.05)
+        if readyRead then
+            if not state.active then return ready() end
+            state.readySince=state.readySince or now
+            if now-state.readySince>=.04 then return ready() end
+            return predicted()
+        end
+        state.readySince=nil
+        if live and number(cd) and cd>=0 and cd<20 then
+            if not state.active then
+                start()
+            elseif state.last and cd<state.last-.05 then
+                -- Only sustained, substantial drops mean a new cooldown cycle.
+                -- Ignore isolated old packets and small HUD quantization errors.
+                local large=state.last-cd>=math.max(2,state.last*.25)
+                if large then
+                    local pending=state.pendingReset
+                    if not pending or cd<pending.value-.5 then
+                        state.pendingReset={since=now,count=1,value=cd}
+                    else
+                        pending.count=pending.count+1;pending.value=cd
+                        if pending.count>=3 and now-pending.since>=.08 then start() end
+                    end
+                    if state.pendingReset then return predicted() end
+                else
+                    state.pendingReset=nil
+                    return predicted()
+                end
+            else state.pendingReset=nil end
+            -- Switching between HUD and attributes must not restart the timer.
+            if state.source~=source then state.points={};state.source=source end
+            local points=state.points
+            if #points==0 or (cd>points[#points].cd and now-points[#points].time>=.025) then
+                points[#points+1]={cd=cd,time=now}
+                while #points>32 or (#points>2 and now-points[1].time>1.6) do table.remove(points,1) end
+                local first=points[1]
+                if #points>=6 and now-first.time>=.6 then
+                    -- Median pairwise slopes withstand individual jittery samples.
+                    local slopes={}
+                    for i=1,#points-1 do
+                        for j=i+1,#points do
+                            local dt=points[j].time-points[i].time
+                            if dt>=.25 then
+                                local rate=(points[j].cd-points[i].cd)/dt
+                                if rate>.01 and rate<=400 then slopes[#slopes+1]=rate end
+                            end
+                        end
+                    end
+                    if #slopes>=6 then
+                        table.sort(slopes)
+                        local function median(values)
+                            table.sort(values)
+                            local n=#values
+                            if n%2==0 then return (values[n/2]+values[n/2+1])/2 end
+                            return values[(n+1)/2]
+                        end
+                        local rate=median(slopes)
+                        local low=slopes[math.max(1,math.floor(#slopes*.25))]
+                        local high=slopes[math.max(1,math.floor(#slopes*.75))]
+                        if (high-low)/rate<=.2 then
+                            local intercepts={}
+                            for _,point in ipairs(points) do
+                                intercepts[#intercepts+1]=point.cd-rate*(point.time-first.time)
+                            end
+                            local intercept=median(intercepts)
+                            local candidate=first.time+(20-intercept)/rate
+                            if candidate>now then
+                                if not state.endsAt then state.endsAt=candidate
+                                else
+                                    -- Refine gently, rather than replace the clock each poll.
+                                    local limit=math.max(0,now-(state.fitAt or now))*.2
+                                    state.endsAt=state.endsAt+math.max(-limit,math.min(limit,candidate-state.endsAt))
+                                end
+                                state.rate=rate
+                            end
+                        end
+                    end
+                end
+                state.fitAt=now
+            end
+            state.last=math.max(state.last and state.active and state.last or 0,cd)
+            -- A confirmed restart establishes its new low progress value.
+            if #points==1 then state.last=cd end
+            state.seen=now
+            return state.last,source
+        end
+        if state.active and state.last then return predicted() end
         return cd,source
+    end
+    local function cooldownSeconds(state,now)
+        if not state or not state.active or not number(state.endsAt) then return nil end
+        local seconds=math.max(1,math.ceil(state.endsAt-now-.000001))
+        -- Within a cycle the visible whole-second countdown may only decrease.
+        if state.displaySeconds then seconds=math.min(seconds,state.displaySeconds) end
+        state.displaySeconds=seconds
+        return seconds
     end
     local function readMoves(player,character,record,now)
         local moves,seen={},{}
@@ -2021,6 +2081,7 @@ local function mountPlayerESP()
             local history=record and record.cooldowns[tostring(move.instance)]
             if number(move.cd) and move.cd<20 and history and number(history.endsAt) then
                 move.cooldownEndsAt=history.endsAt
+                move.cooldownSeconds=cooldownSeconds(history,now)
             end
         end
         if record then
@@ -2283,8 +2344,10 @@ local function mountPlayerESP()
         local count=math.min(2,#lines)
         local nameY=y+12+math.max(0,(h-27-count*11)/2)
         for row=1,count do text("Name"..row,lines[row],x+w/2,nameY+(row-1)*11,10,true) end
-        local seconds=number(move.cooldownEndsAt) and number(now)
-            and math.max(0,move.cooldownEndsAt-now) or nil
+        local seconds=number(move.cooldownSeconds) and move.cooldownSeconds or nil
+        if not seconds and number(move.cooldownEndsAt) and number(now) then
+            seconds=math.max(0,move.cooldownEndsAt-now)
+        end
         local state=not known and "UNKNOWN" or ready and "READY"
             or (seconds and (math.max(1,math.ceil(seconds-.000001)).."s") or "...")
         text("State",state,x+w/2,y+h-12,9,true)
