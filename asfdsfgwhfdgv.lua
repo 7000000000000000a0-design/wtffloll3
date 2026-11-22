@@ -4170,11 +4170,9 @@ local function mountMahoragaCounter()
     local counterTab = window:Tab("Mahoraga")
     counterTab:Section("Wheel spin counter")
     local showSelf = counterTab:Toggle({Name="Show my wheel bar", Default=true, Flag="mahoraga_self"})
-    local showOthers = {Value=true}
-    local counterColor = Color3.fromRGB(255,220,120)
     local barColor = counterTab:Colorpicker({Name="Bar colour", Default=Color3.fromRGB(35,255,0), Flag="mahoraga_bar_color"})
 
-    local drawings, stopped, elapsed = {}, false, 0
+    local stopped, elapsed = false, 0
     local bar = {}
     local barSignature, barVisible
     local heartbeat
@@ -4288,31 +4286,6 @@ local function mountMahoragaCounter()
         end
         barSignature=signature
     end
-    local function remove(player)
-        local drawing = drawings[player]
-        if not drawing then return end
-        hide(drawing)
-        local ok = pcall(function() drawing:Remove() end)
-        if not ok then pcall(function() drawing:Destroy() end) end
-        drawings[player] = nil
-        for i=#ownedDrawings,1,-1 do
-            if ownedDrawings[i] == drawing then table.remove(ownedDrawings,i); break end
-        end
-    end
-    local function textFor(player)
-        if drawings[player] then return drawings[player] end
-        local drawing = Drawing.new("Text")
-        drawings[player] = drawing
-        ownedDrawings[#ownedDrawings+1] = drawing
-        drawing.Visible=false
-        drawing.Center=true
-        drawing.Outline=true
-        drawing.Size=18
-        drawing.Font=2
-        drawing.Transparency=1
-        drawing.ZIndex=1000
-        return drawing
-    end
     local function spinValue(character)
         -- Character wrappers can briefly be unavailable during a respawn.
         local ok,count=pcall(function()
@@ -4327,7 +4300,6 @@ local function mountMahoragaCounter()
     local lastCounterError
     local function refresh()
         local camera = world.CurrentCamera
-        local present = {}
         local localPlayer = Players.LocalPlayer
         local localCount = localPlayer and spinValue(localPlayer.Character)
         if camera and showSelf.Value and localCount~=nil and not isPlayerWhitelisted(localPlayer) then
@@ -4336,45 +4308,6 @@ local function mountMahoragaCounter()
         else
             hideBar()
         end
-        for _,player in ipairs(Players:GetPlayers()) do
-            present[player] = true
-            hide(drawings[player])
-            -- A player leaving or replacing a character must not break other counters.
-            pcall(function()
-                local isSelf = player == localPlayer
-                if isSelf or isPlayerWhitelisted(player) then return end
-                if (isSelf and not showSelf.Value) or (not isSelf and not showOthers.Value) then return end
-                if not camera then return end
-                local character = player.Character
-                local count = spinValue(character)
-                if count == nil then return end
-                local humanoid = character:FindFirstChildOfClass("Humanoid")
-                if humanoid and humanoid.Health <= 0 then return end
-                local position, caption
-                if isSelf then
-                    local viewport = camera.ViewportSize
-                    position = Vector2.new(viewport.X/2,80)
-                    caption = "Mahoraga | Spins: "..tostring(count)
-                else
-                    local head = character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
-                    if not head then return end
-                    local point,onScreen=projectToScreen(head.Position+Vector3.new(0,3,0),camera)
-                    if not point or not onScreen then return end
-                    position = Vector2.new(point.X,point.Y)
-                    caption = tostring(player.DisplayName or player.Name).." | Spins: "..tostring(count)
-                end
-                local drawing = textFor(player)
-                drawing.Text=caption
-                drawing.Position=position
-                drawing.Color=counterColor
-                drawing.Visible=true
-            end)
-        end
-        local departed = {}
-        for player in pairs(drawings) do
-            if not present[player] then departed[#departed+1] = player end
-        end
-        for _,player in ipairs(departed) do remove(player) end
     end
     heartbeat = connectFrame("Heartbeat",function(dt)
         if stopped or not alive then return end
@@ -4384,7 +4317,6 @@ local function mountMahoragaCounter()
         local ok, err = pcall(refresh)
         if not ok then
             hideBar()
-            for _,drawing in pairs(drawings) do hide(drawing) end
             local text = "Wheel counter unavailable: "..tostring(err)
             if text ~= lastCounterError then
                 lastCounterError=text
@@ -4396,9 +4328,6 @@ local function mountMahoragaCounter()
         if stopped then return end
         stopped=true
         if heartbeat then pcall(function() heartbeat:Disconnect() end) end
-        local remaining = {}
-        for player in pairs(drawings) do remaining[#remaining+1]=player end
-        for _,player in ipairs(remaining) do remove(player) end
         for _,drawing in pairs(bar) do
             hide(drawing)
             local ok=pcall(function() drawing:Remove() end)
