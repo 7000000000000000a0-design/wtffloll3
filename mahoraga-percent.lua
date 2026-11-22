@@ -2122,7 +2122,7 @@ local function mountPlayerESP()
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
     end
-    local function bodyBounds(record,character,root,camera)
+    local function bodyBounds(record,character,root,camera,rootPosition)
         -- Cache rig dimensions, never animated limb positions or accessories.
         if not record.bounds then
             local rootHalf,headHeight,torsoWidth,armWidth,legHeight,hip=1,1,2,1,2,0
@@ -2145,7 +2145,7 @@ local function mountPlayerESP()
             }
         end
         local bounds=record.bounds
-        local center=root.Position
+        local center=rootPosition or root.Position
         -- Use only the position and projection APIs supported by Matcha.
         local point=project(center,camera)
         local top=project(center+Vector3.new(0,bounds.upper,0),camera)
@@ -2158,6 +2158,33 @@ local function mountPlayerESP()
         return point.X-halfWidth,point.X+halfWidth,math.min(top.Y,bottom.Y),height
     end
 
+    local function stableBounds(record,left,right,top,height,now)
+        local targetX=(left+right)/2
+        local targetY=top+height/2
+        local targetWidth=right-left
+        local previous=record.screenBounds
+        if not previous or now<previous.time or now-previous.time>.25
+            or math.abs(targetX-previous.x)>80 or math.abs(targetY-previous.y)>80
+            or math.abs(height-previous.height)>math.max(40,previous.height*.5) then
+            previous={x=targetX,y=targetY,width=targetWidth,height=height,time=now}
+            record.screenBounds=previous
+        else
+            local dt=math.max(0,math.min(.1,now-previous.time))
+            local positionAlpha=1-math.exp(-45*dt)
+            local sizeAlpha=1-math.exp(-25*dt)
+            local function follow(current,target,alpha)
+                if math.abs(target-current)<.35 then return current end
+                return current+(target-current)*alpha
+            end
+            previous.x=follow(previous.x,targetX,positionAlpha)
+            previous.y=follow(previous.y,targetY,positionAlpha)
+            previous.width=follow(previous.width,targetWidth,sizeAlpha)
+            previous.height=follow(previous.height,height,sizeAlpha)
+            previous.time=now
+        end
+        return previous.x-previous.width/2,previous.x+previous.width/2,
+            previous.y-previous.height/2,previous.height
+    end
     local function verticalMeter(record,key,ratio,x,top,height,color)
         -- Keep a small percentage just outside each vertical mode line.
         local percentKey=key.."Percent"
@@ -2234,7 +2261,7 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
+            hide(record);record.character=identity;record.bounds=nil;record.screenBounds=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -2249,8 +2276,9 @@ local function mountPlayerESP()
             return (head.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
         end)
         if okDistance and number(distance) and distance>range.Value then hide(record);return end
-        local point,visible=project(root.Position+Vector3.new(0,3,0),camera)
-        if not point or not visible then hide(record);return end
+        local rootPosition=root.Position
+        local point,visible=project(rootPosition+Vector3.new(0,3,0),camera)
+        if not point or not visible then record.screenBounds=nil;hide(record);return end
         -- Do not read point.Z: Matcha's Vector2 projections do not expose it.
         if now>=record.nextRead then
             record.mode=nil;record.mode2=nil;record.moves={}
@@ -2268,9 +2296,13 @@ local function mountPlayerESP()
         end
         record.used={}
         local height=18+(modeOn.Value and (18+(record.mode2~=nil and 18 or 0)) or 0)
+        local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition)
+        if left then
+            left,right,top,bodyHeight=stableBounds(record,left,right,top,bodyHeight,now)
+            point=Vector2.new((left+right)/2,top-12)
+        end
         local x=math.max(4,math.min(point.X-160,camera.ViewportSize.X-324))
         local y=math.max(4,math.min(point.Y-height,camera.ViewportSize.Y-height-4))
-        local left,right,top,bodyHeight=bodyBounds(record,character,root,camera)
         label(record,"name",tostring(player.DisplayName or player.Name),x,y,white);y=y+18
         if modeOn.Value then
             local ratio=record.mode
