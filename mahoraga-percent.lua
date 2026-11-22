@@ -1052,6 +1052,7 @@ local function screenProjection(camera)
         if math.abs(rightLength-1)>.01 or math.abs(upLength-1)>.01 or math.abs(backLength-1)>.01 then return end
         frame.right=Vector3.new(matrix[4],matrix[7],matrix[10])
         frame.up=Vector3.new(matrix[5],matrix[8],matrix[11])
+        frame.forward=Vector3.new(-matrix[6],-matrix[9],-matrix[12])
         if frame.focal then frame.matrix=matrix end
     end)
     local function readDirection(name)
@@ -1065,6 +1066,7 @@ local function screenProjection(camera)
     end
     if not frame.right then frame.right=readDirection("RightVector") end
     if not frame.up then frame.up=readDirection("UpVector") end
+    if not frame.forward then frame.forward=readDirection("LookVector") end
     return frame
 end
 local function projectToScreen(position,camera,frame)
@@ -2346,6 +2348,39 @@ local function mountPlayerESP()
     local function project(position,camera,frame)
         return projectToScreen(position,camera,frame)
     end
+    local function projectAnchor(record,position,camera,frame,now)
+        -- Multiple reads of the SAME world point reject a torn/native projection
+        -- sample without averaging previous screen positions or adding a trail.
+        local samples,xs,ys={},{},{}
+        for i=1,3 do
+            local point,visible,depth=project(position,camera,frame)
+            if point and number(point.X) and number(point.Y) then
+                samples[#samples+1]={x=point.X,y=point.Y,visible=visible,depth=depth}
+                xs[#xs+1]=point.X;ys[#ys+1]=point.Y
+            end
+        end
+        if #samples==0 then return nil,false end
+        local function median(values)
+            table.sort(values)
+            local n=#values
+            if n%2==0 then return (values[n/2]+values[n/2+1])/2 end
+            return values[(n+1)/2]
+        end
+        local x,y=median(xs),median(ys)
+        local selected,best
+        for _,sample in ipairs(samples) do
+            local error=math.abs(sample.x-x)+math.abs(sample.y-y)
+            if not best or error<best then selected=sample;best=error end
+        end
+        local previous=record.anchorPixel
+        if previous and previous.camera==camera and now>=previous.time and now-previous.time<.25 then
+            if math.abs(x-previous.x)<.65 then x=previous.x end
+            if math.abs(y-previous.y)<.65 then y=previous.y end
+        end
+        x=math.floor(x+.5);y=math.floor(y+.5)
+        record.anchorPixel={x=x,y=y,camera=camera,time=now}
+        return Vector2.new(x,y),selected.visible,selected.depth
+    end
     local function object(record,key,kind)
         local d=record.drawings[key]
         if d then return d end
@@ -2399,26 +2434,20 @@ local function mountPlayerESP()
         if not point or not number(point.X) or not number(point.Y) then return nil end
         frame=frame or screenProjection(camera)
         local scale
-        -- Use two consecutive, widely spaced probes. Subtracting a later probe
-        -- from an earlier root point amplified camera timing error into size pops.
-        local axis=frame and (frame.right or frame.up)
-        if axis then
-            local halfSpan=math.max(2,halfWidth)
-            local first=project(center-axis*halfSpan,camera,frame)
-            local second=project(center+axis*halfSpan,camera,frame)
-            if first and second and number(first.X) and number(first.Y)
-                and number(second.X) and number(second.Y) then
-                local dx,dy=second.X-first.X,second.Y-first.Y
-                local measured=math.sqrt(dx*dx+dy*dy)/(halfSpan*2)
-                if number(measured) and measured>.01 then scale=measured end
-            end
-        end
-        if not scale and frame and frame.focal then
+        -- Derive size from one captured camera pose, not differences between
+        -- screen projections sampled at different points in camera motion.
+        if frame and frame.focal then
             local depth
             if frame.matrix then
                 local m=frame.matrix
                 depth=-((center.X-m[1])*m[6]+(center.Y-m[2])*m[9]+(center.Z-m[3])*m[12])
-            elseif frame.position then
+            elseif frame.position and frame.forward then
+                pcall(function()
+                    local relative=center-frame.position
+                    depth=relative.X*frame.forward.X+relative.Y*frame.forward.Y+relative.Z*frame.forward.Z
+                end)
+            end
+            if (not number(depth) or depth<=.01) and frame.position then
                 pcall(function() depth=(center-frame.position).Magnitude end)
             end
             if number(depth) and depth>.01 then scale=frame.focal/depth end
@@ -2456,7 +2485,7 @@ local function mountPlayerESP()
         local target=count%2==0 and (values[count/2]+values[count/2+1])/2 or values[(count+1)/2]
         local dt=math.max(0,math.min(.1,now-filter.time))
         local difference=math.log(target/filter.value)
-        if math.abs(difference)>.004 then
+        if math.abs(difference)>.02 then
             local change=difference*(1-math.exp(-28*dt))
             local maximum=2.5*dt
             filter.value=filter.value*math.exp(math.max(-maximum,math.min(maximum,change)))
@@ -2469,7 +2498,10 @@ local function mountPlayerESP()
         local height=(upper+lower)*scale
         if height<3 then height=3;scale=height/(upper+lower) end
         if not number(height) or height<=0 then return nil end
-        return point.X-halfWidth*scale,point.X+halfWidth*scale,point.Y-upper*scale,height
+        local left=math.floor(point.X-halfWidth*scale+.5)
+        local right=math.floor(point.X+halfWidth*scale+.5)
+        local top=math.floor(point.Y-upper*scale+.5)
+        return left,right,top,math.max(3,math.floor(height+.5))
     end
     local function verticalMeter(record,key,ratio,x,top,height,color)
         -- Keep a small percentage just outside each vertical mode line.
@@ -2478,7 +2510,7 @@ local function mountPlayerESP()
         local uiScale=math.min(1,math.max(.3,height/160))
         set(percent,"Size",math.max(6,math.floor(12*uiScale+.5)))
         set(percent,"Center",true)
-        local percentGap=math.max(7,22*uiScale)
+        local percentGap=math.floor(math.max(7,22*uiScale)+.5)
         local percentX=key=="mode2" and x+percentGap or x-percentGap
         local lineWidth=math.max(1,2*uiScale)
         local borderWidth=math.max(.5,uiScale)
@@ -2574,7 +2606,7 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.lastScale=nil;record.scaleFilter=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
+            hide(record);record.character=identity;record.bounds=nil;record.anchorPixel=nil;record.lastScale=nil;record.scaleFilter=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -2591,7 +2623,7 @@ local function mountPlayerESP()
         if okDistance and number(distance) and distance>range.Value then hide(record);return end
         local rootPosition=root.Position
         if not frame or frame.camera~=camera then frame=screenProjection(camera) end
-        local point,visible,depth=project(rootPosition,camera,frame)
+        local point,visible,depth=projectAnchor(record,rootPosition,camera,frame,now)
         if not point or (depth and depth<=0) then hide(record);return end
         local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition,point,frame,now)
         local view=camera.ViewportSize
@@ -2624,9 +2656,9 @@ local function mountPlayerESP()
         end
         if movesOn.Value then
             local count=math.max(1,#record.moves)
-            local cardSize=math.max(8,math.min(64,bodyHeight*.38))
+            local cardSize=math.floor(math.max(8,math.min(64,bodyHeight*.38))+.5)
             local cardScale=cardSize/64
-            local gap,pad=math.max(1,4*cardScale),4
+            local gap,pad=math.max(1,math.floor(4*cardScale+.5)),4
             local boxWidth=math.min(cardSize,math.max(1,view.X-pad*2))
             local boxHeight=math.min(cardSize,math.max(1,view.Y-pad*2))
             local rows=math.min(count,math.max(1,math.floor((view.Y-pad*2+gap)/(boxHeight+gap))))
@@ -2635,7 +2667,7 @@ local function mountPlayerESP()
             boxWidth=math.min(boxWidth,math.max(1,(view.X-pad*2-(columns-1)*columnGap)/columns))
             local stackWidth=columns*boxWidth+(columns-1)*columnGap
             local stackHeight=rows*boxHeight+(rows-1)*gap
-            local sideGap=math.max(10,46*cardScale)
+            local sideGap=math.floor(math.max(10,46*cardScale)+.5)
             local rightX=right+sideGap
             local leftX=left-sideGap-stackWidth
             local rightFits=rightX+stackWidth<=view.X-pad
@@ -2645,9 +2677,9 @@ local function mountPlayerESP()
             elseif side=="left" and not leftFits and rightFits then side="right" end
             record.boxSide=side
             local boxX=side=="left" and leftX or rightX
-            boxX=math.max(pad,math.min(boxX,view.X-pad-stackWidth))
+            boxX=math.floor(math.max(pad,math.min(boxX,view.X-pad-stackWidth))+.5)
             local boxY=top+(bodyHeight-stackHeight)/2
-            boxY=math.max(pad,math.min(boxY,view.Y-pad-stackHeight))
+            boxY=math.floor(math.max(pad,math.min(boxY,view.Y-pad-stackHeight))+.5)
             if #record.moves==0 then
                 moveBox(record,1,{name="Moves",source="unknown"},boxX,boxY,boxWidth,boxHeight,now)
             else
