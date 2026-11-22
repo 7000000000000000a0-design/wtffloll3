@@ -2295,22 +2295,13 @@ local function mountPlayerESP()
             record.nextRead=now+.05
         end
         record.used={}
-        local height=18+(modeOn.Value and (18+(record.mode2~=nil and 18 or 0)) or 0)
         local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition)
         if left then
             left,right,top,bodyHeight=stableBounds(record,left,right,top,bodyHeight,now)
             point=Vector2.new((left+right)/2,top-12)
         end
-        local x=math.max(4,math.min(point.X-160,camera.ViewportSize.X-324))
-        local y=math.max(4,math.min(point.Y-height,camera.ViewportSize.Y-height-4))
-        label(record,"name",tostring(player.DisplayName or player.Name),x,y,white);y=y+18
         if modeOn.Value then
             local ratio=record.mode
-            label(record,"mode",ratio and string.format("Mode: %.2f%%",ratio*100) or "Mode: Unknown",x,y,ratio and green or gray)
-            y=y+18
-            if record.mode2~=nil then
-                label(record,"mode2",string.format("Second Mode: %.2f%%",record.mode2*100),x,y,green);y=y+18
-            end
             if left then
                 verticalMeter(record,"mode",ratio,left-5,top,bodyHeight,modeRed)
                 if record.mode2~=nil then
