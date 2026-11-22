@@ -3318,11 +3318,17 @@ local function mountPlayerESP()
         local dark=Color3.fromRGB(32,35,38)
         square(record,key.."Border",x-border,y-border,width+border*2,height+border*2,dark)
         set(record.drawings[key.."Border"],"Corner",3*scale)
-        square(record,key.."Track",x,y,width,height,Color3.fromRGB(175,195,205))
-        set(record.drawings[key.."Track"],"Transparency",.13)
+        set(record.drawings[key.."Border"],"ZIndex",900)
+        local trackColor=key=="Mode2" and secondPurple or Color3.fromRGB(175,195,205)
+        square(record,key.."Track",x,y,width,height,trackColor)
+        set(record.drawings[key.."Track"],"ZIndex",901)
+        set(record.drawings[key.."Track"],"Transparency",key=="Mode2" and .24 or .13)
         if number(ratio) then
             local fill=width*math.max(0,math.min(1,ratio))
-            if fill>0 then square(record,key.."Fill",x,y,fill,height,color) end
+            if fill>0 then
+                square(record,key.."Fill",x,y,fill,height,color)
+                set(record.drawings[key.."Fill"],"ZIndex",902)
+            end
         end
         -- The reference uses four health sections and ten dashed mode sections.
         for section=1,segments-1 do
@@ -3330,6 +3336,7 @@ local function mountPlayerESP()
             for dash=0,2 do
                 local stripe=key.."Tick"..section.."_"..dash
                 square(record,stripe,sx-scale*.5,y+height*dash/3,scale,math.max(scale,height/4),dark)
+                set(record.drawings[stripe],"ZIndex",903)
             end
         end
     end
@@ -3366,7 +3373,14 @@ local function mountPlayerESP()
             sidebarMeter(row,"Health",data.healthRatio,x,y+23*scale,width,15*scale,4,green,scale)
             sidebarMeter(row,"Mode",data.mode,x+4*scale,y+44*scale,width-8*scale,12*scale,10,cyan,scale)
             if data.mode2~=nil and data.showMode2 then
-                sidebarMeter(row,"Mode2",data.mode2,x+4*scale,y+62*scale,width-8*scale,10*scale,10,secondPurple,scale)
+                -- The third row is exclusively the actual secondary-mode reading.
+                sidebarMeter(row,"Mode2",data.mode2,x+4*scale,y+62*scale,width-8*scale,12*scale,10,secondPurple,scale)
+                local percent=object(row,"Mode2Percent","Text")
+                set(percent,"Size",math.max(7,math.floor(10*scale+.5)))
+                set(percent,"Center",true)
+                set(percent,"ZIndex",904)
+                label(row,"Mode2Percent",string.format("2nd mode %.0f%%",math.max(0,math.min(1,data.mode2))*100),
+                    x+width/2,y+63*scale,white)
             end
             for key,drawing in pairs(row.drawings) do
                 if not row.used[key] then set(drawing,"Visible",false) end
