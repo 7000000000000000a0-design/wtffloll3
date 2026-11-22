@@ -2602,17 +2602,8 @@ local function mountPlayerESP()
         local known=number(value)
         local ready=known and value>=20
         local tint=Color3.fromRGB(225,38,40)
-        square(record,key.."Border",x-1,y-1,w+2,h+2,Color3.fromRGB(75,32,35))
         square(record,key.."Body",x,y,w,h,tint)
-        set(record.drawings[key.."Body"],"ZIndex",900)
-        -- Red button gradient, matching the game's move slots.
-        for band=1,8 do
-            local shade=1-(band-1)*.075
-            local bandY=y+h*(band-1)/8
-            square(record,key.."Shade"..band,x,bandY,w,h/8+.5,
-                Color3.fromRGB(math.floor(225*shade),math.floor(38*shade),math.floor(40*shade)))
-            set(record.drawings[key.."Shade"..band],"ZIndex",901)
-        end
+        set(record.drawings[key.."Body"],"ZIndex",901)
         -- cd is readiness on a 0..20 scale: 0 = just used, 20 = ready.
         -- Keep the bottom edge fixed so the gray area drains downward.
         local remaining=known and (1-math.max(0,math.min(20,value))/20) or 0
