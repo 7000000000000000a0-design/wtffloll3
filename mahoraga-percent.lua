@@ -1892,38 +1892,60 @@ local function mountPlayerESP()
     local function trackCooldown(history,key,cd,source,now)
         local state=history[key]
         if not state then state={points={}};history[key]=state end
-        local live=source=="HUD" or source=="attribute" or source=="component attribute" or source=="value" or source=="attribute fallback"
-        if live and number(cd) then
+        local live=source=="HUD" or source=="attribute" or source=="component attribute"
+            or source=="value" or source=="attribute fallback"
+        if live and number(cd) and cd>=0 and cd<=20 then
             if cd>=20 then
-                state.active=false;state.last=20;state.seen=now
+                state.active=false;state.last=20;state.seen=now;state.endsAt=nil
                 return cd,source
             end
-            if not state.active or (state.last and cd<state.last-.5) then
-                state.points={};state.active=true;state.rate=nil
+            if not state.active or state.source~=source or (state.last and cd<state.last-.5) then
+                state.points={};state.active=true;state.rate=nil;state.endsAt=nil
             end
+            state.source=source
             local points=state.points
             if #points==0 or cd~=points[#points].cd then
                 points[#points+1]={cd=cd,time=now}
-                if #points>16 then table.remove(points,1) end
-                if #points>=2 then
-                    local first,last=points[1],points[#points]
-                    local delta=last.time-first.time
-                    if delta>=.025 and last.cd>first.cd then
-                        local rate=(last.cd-first.cd)/delta
-                        if rate>.01 and rate<=400 then state.rate=rate end
+                while #points>40 or (#points>2 and now-points[1].time>1.25) do table.remove(points,1) end
+                local first=points[1]
+                local span=now-first.time
+                if (#points>=3 and span>=.2) or (#points==2 and span>=.35) then
+                    -- Fit the entire sample window, rather than a single frame delta.
+                    -- Relative times avoid loss of precision from large tick() values.
+                    local n,sx,sy,sxx,sxy=#points,0,0,0,0
+                    for _,point in ipairs(points) do
+                        local x=point.time-first.time
+                        sx=sx+x;sy=sy+point.cd;sxx=sxx+x*x;sxy=sxy+x*point.cd
+                    end
+                    local denominator=n*sxx-sx*sx
+                    if denominator>0 then
+                        local rate=(n*sxy-sx*sy)/denominator
+                        local intercept=(sy-rate*sx)/n
+                        local residual,total=0,0
+                        for _,point in ipairs(points) do
+                            local predicted=intercept+rate*(point.time-first.time)
+                            residual=residual+(point.cd-predicted)^2
+                            total=total+(point.cd-sy/n)^2
+                        end
+                        local reliable=rate>.01 and rate<=400 and total>0 and residual/total<=.04
+                        state.rate=reliable and rate or nil
+                        state.endsAt=reliable and (first.time+(20-intercept)/rate) or nil
                     end
                 end
             end
             state.last=cd;state.seen=now
             return cd,source
         end
-        -- Missing data is not a completion event for a previously observed cooldown.
-        -- Keep independent move histories; never reset all moves when one changes.
         if state.active and state.last and state.seen then
-            if state.rate then
-                return math.min(20,state.last+math.max(0,now-state.seen)*state.rate),"estimated"
+            -- A successful missing attribute can confirm readiness at the deadline.
+            if source=="ready default" and state.endsAt and now>=state.endsAt then
+                state.active=false;state.last=20;state.seen=now;state.endsAt=nil
+                return 20,source
             end
-            return state.last,"last observed"
+            if state.rate and now-state.seen<=.5 then
+                return math.min(19.999,state.last+math.max(0,now-state.seen)*state.rate),"estimated"
+            end
+            return nil,"unavailable"
         end
         return cd,source
     end
@@ -1960,23 +1982,19 @@ local function mountPlayerESP()
                         local ok,value=pcall(function() return rename.Value end)
                         if ok and type(value)=="string" and value~="" then name=value end
                     end
-                    local cd=hudCooldown(player,slot,tostring(name))
-                    local source=cd~=nil and "HUD" or "attribute"
-                    if cd==nil then cd,source=readCooldown(move) end
-                    if cd==nil then source="unavailable" end
+                    local cd,source=readCooldown(move)
+                    if not number(cd) or source=="ready default" then
+                        local hud=hudCooldown(player,slot,tostring(name))
+                        if number(hud) then cd,source=hud,"HUD" end
+                    end
+                    if not number(cd) then cd,source=nil,"unavailable" end
                     -- NewName can change with charges/variants; the underlying move
                     -- instance owns the cooldown independently of its display name.
                     local key=tostring(identity)
                     present[key]=true
                     if record then cd,source=trackCooldown(record.cooldowns,key,cd,source,now) end
-                    local cooldownEndsAt
-                    local history=record and record.cooldowns[key]
-                    if number(cd) and cd<20 and history and number(history.rate)
-                        and history.rate>0 and number(history.last) and number(history.seen) then
-                        cooldownEndsAt=history.seen+math.max(0,20-history.last)/history.rate
-                    end
                     moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,
-                        source=source,instance=identity,cooldownEndsAt=cooldownEndsAt}
+                        source=source,instance=identity}
                 elseif depth>0 and move.ClassName=="Folder" and move.Name~=".Config" then
                     scan(move,depth-1)
                 end
@@ -1992,10 +2010,17 @@ local function mountPlayerESP()
                     if not occupied[slot] then move.slot=slot;occupied[slot]=true;break end
                 end
                 local value=hudCooldown(player,move.slot,move.name)
-                if value~=nil then
+                if value~=nil and move.source~="component attribute" and move.source~="attribute"
+                    and move.source~="value" and move.source~="attribute fallback" then
                     move.cd,move.source=value,"HUD"
                     if record then move.cd,move.source=trackCooldown(record.cooldowns,tostring(move.instance),value,"HUD",now) end
                 end
+            end
+        end
+        for _,move in ipairs(moves) do
+            local history=record and record.cooldowns[tostring(move.instance)]
+            if number(move.cd) and move.cd<20 and history and number(history.endsAt) then
+                move.cooldownEndsAt=history.endsAt
             end
         end
         if record then
