@@ -1168,6 +1168,37 @@ local function mountBlockWatcher()
         local signature=table.concat(names,"\0")
         if signature~=rosterSignature then target:Refresh(names,true);rosterSignature=signature end
     end
+    page:Keybind({Name="Select nearest player",Default="F4",Mode="Press",Flag="auto_unblock_nearest_key",
+        Callback=function()
+            if stopped or not alive or not robloxFocused() or robloxTextFocused() then return end
+            local me=players.LocalPlayer
+            local ownCharacter=me and me.Character
+            local ownRoot=ownCharacter and ownCharacter:FindFirstChild("HumanoidRootPart")
+            if not ownRoot then message("Cannot select nearest: your character is unavailable");return end
+            local nearest,nearestDistance
+            for _,player in ipairs(rosterPlayers) do
+                if player~=me and not isPlayerWhitelisted(player) then
+                    local ok,distance=pcall(function()
+                        local character=player.Character
+                        local root=character and character:FindFirstChild("HumanoidRootPart")
+                        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+                        if not root or not humanoid or humanoid.Health<=0 then return nil end
+                        return (root.Position-ownRoot.Position).Magnitude
+                    end)
+                    if ok and type(distance)=="number" and distance==distance
+                        and (not nearestDistance or distance<nearestDistance) then
+                        nearest=player;nearestDistance=distance
+                    end
+                end
+            end
+            if not nearest then message("No eligible nearby player found");return end
+            resetWatch()
+            nextRosterRead=0
+            refreshTargets(tick and tick() or os.clock())
+            target:Set(tostring(nearest.Name))
+            cachedName=nil;cachedRoster=nil;cachedPlayer=nil
+            message("Selected nearest: "..tostring(nearest.Name))
+        end})
     local function blockingState(character)
         local marker=character:FindFirstChild("Blocking")
         local function decode(value)
