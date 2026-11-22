@@ -2658,16 +2658,39 @@ local function mountPlayerESP()
         local value=move.cd
         local known=number(value)
         local ready=known and value>=20
-        local tint=Color3.fromRGB(225,38,40)
+        local tint=ready and Color3.fromRGB(0,110,255) or Color3.fromRGB(250,0,0)
+        local radius=math.min(w,h)*.16
         square(record,key.."Body",x,y,w,h,tint)
         set(record.drawings[key.."Body"],"ZIndex",901)
+        pcall(function() set(record.drawings[key.."Body"],"Corner",radius) end)
         -- cd is readiness on a 0..20 scale: 0 = just used, 20 = ready.
         -- Keep the bottom edge fixed so the gray area drains downward.
         local remaining=known and (1-math.max(0,math.min(20,value))/20) or 0
         local overlayHeight=h*remaining
-        square(record,key.."Cooldown",x,y+h-overlayHeight,w,overlayHeight,Color3.fromRGB(100,103,110))
-        set(record.drawings[key.."Cooldown"],"ZIndex",902)
-        set(record.drawings[key.."Cooldown"],"Transparency",.75)
+        -- Clip the cooldown fill to the rounded silhouette so gray does not
+        -- square off the bottom corners as the move approaches readiness.
+        if overlayHeight>0 then
+            local cuts={0}
+            for part=1,8 do cuts[#cuts+1]=radius*part/8 end
+            cuts[#cuts+1]=h-radius
+            for part=1,8 do cuts[#cuts+1]=h-radius+radius*part/8 end
+            for part=1,#cuts-1 do
+                local first=math.max(cuts[part],h-overlayHeight)
+                local last=cuts[part+1]
+                if last>first then
+                    local edge=math.min(first,h-last)
+                    local inset=0
+                    if edge<radius then
+                        local dy=radius-math.max(0,edge)
+                        inset=radius-math.sqrt(math.max(0,radius*radius-dy*dy))
+                    end
+                    local fillKey=key.."Cooldown"..part
+                    square(record,fillKey,x+inset,y+first,math.max(0,w-inset*2),last-first,Color3.fromRGB(100,103,110))
+                    set(record.drawings[fillKey],"ZIndex",902)
+                    set(record.drawings[fillKey],"Transparency",.75)
+                end
+            end
+        end
         local function text(suffix,text,tx,ty,size,center,color)
             local d=object(record,key..suffix,"Text")
             set(d,"Size",size);set(d,"Center",center);set(d,"ZIndex",903)
@@ -2684,17 +2707,17 @@ local function mountPlayerESP()
             end
             return previous
         end
-        local nameSize=font("nameSize",10*textScale)
-        local stateSize=font("stateSize",9*textScale)
-        local slotSize=font("slotSize",11*textScale)
+        local nameSize=font("nameSize",14*textScale)
+        local stateSize=font("stateSize",8*textScale)
+        local slotSize=font("slotSize",10*textScale)
         local guardSize=font("guardSize",7*textScale)
         if h>22 then layout.compact=false elseif h<18 then layout.compact=true end
         if h>38 then layout.lines=2 elseif h<34 then layout.lines=1 end
         if not layout.compact then
-            text("Slot",tostring(move.slot or index),x+math.max(1,4*textScale),y+1,slotSize,false)
+            text("Slot",tostring(move.slot or index),x+math.max(1,2*textScale),y+math.max(1,2*textScale),slotSize,false)
             local lines={}
             local current=""
-            local maxChars=math.max(3,math.floor((w-4)/(nameSize*.6)))
+            local maxChars=math.max(3,math.floor((w-math.max(2,4*textScale))/(nameSize*.5)))
             local name=tostring(move.name or "Unknown")
             for token in name:gmatch("%S+") do
                 local word=token
@@ -2726,7 +2749,7 @@ local function mountPlayerESP()
             local markerY=layout.compact and y or stateY-markerSize-math.max(1,2*textScale)
             text("Guardbreak",caption,x+w/2,markerY,markerSize,true,Color3.fromRGB(255,220,100))
         end
-        text("State",state,x+w/2,stateY,stateSize,true)
+        if not ready then text("State",state,x+w/2,stateY,stateSize,true) end
     end
     local function updatePlayer(player,record,now,frame)
         local character=player.Character
