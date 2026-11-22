@@ -2871,7 +2871,7 @@ local function mountPlayerESP()
         local stateY=y+h-stateSize-padding
         if not ready then text("State",state,x+w/2,stateY,stateSize,true) end
     end
-    local function updatePlayer(player,record,now,frame)
+    local function preparePlayer(player,record,now)
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
@@ -2908,10 +2908,13 @@ local function mountPlayerESP()
             record.nextRead=now+.05
         end
         refreshBodyBounds(record,character,root,now)
-        -- Capture after state reads; never use a shared camera snapshot aged by
-        -- processing another player's cooldowns, tags, dimensions or drawings.
-        frame=screenProjection(camera)
-        local rootPosition=freshRootPosition(root)
+        return {player=player,record=record,character=character,root=root}
+    end
+    local function updatePlayer(player,record,now,frame,sample)
+        local character,root=sample.character,sample.root
+        local camera=frame and frame.camera
+        local rootPosition=sample.position
+        if not camera or not rootPosition then hide(record);return end
         local point,visible,depth=projectAnchor(record,rootPosition,camera,frame,now)
         if not point or (depth and depth<=0) then hide(record);return end
         local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition,point,frame,now)
@@ -2961,26 +2964,43 @@ local function mountPlayerESP()
     local function renderESP()
         if stopped or not alive then return end
         local now=tick and tick() or os.clock()
-        local present={}
-        local frame
+        local present,prepared={},{}
         local ok,list=pcall(function() return Players:GetPlayers() end)
         if not ok then for _,record in pairs(records) do hide(record) end;return end
+        local me=playerKey(Players.LocalPlayer)
+        local function report(record,player,err)
+            hide(record)
+            local message=tostring(err)
+            if record.lastError~=message then
+                record.lastError=message
+                print("[ESP] "..tostring(player.Name)..": "..message)
+            end
+        end
+        -- Complete slow game-data reads for EVERY player before taking any
+        -- camera/position samples. Self and remote players share these phases.
         for _,player in ipairs(list) do
             local identity=playerKey(player)
-            if identity~=playerKey(Players.LocalPlayer) or selfOn.Value then
+            if identity~=me or selfOn.Value then
                 present[identity]=true
                 local record=records[identity]
                 if not record then record={drawings={},nextRead=0,moves={}};records[identity]=record end
-                local success,err=pcall(updatePlayer,player,record,now,frame)
-                if not success then
-                    hide(record)
-                    local message=tostring(err)
-                    if record.lastError~=message then
-                        record.lastError=message
-                        print("[ESP] "..tostring(player.Name)..": "..message)
-                    end
-                else record.lastError=nil end
+                local success,sample=pcall(preparePlayer,player,record,now)
+                if not success then report(record,player,sample)
+                elseif sample then prepared[#prepared+1]=sample end
             end
+        end
+        -- Read all roots together, then capture ONE fresh camera for all of
+        -- them. Never re-sample a later camera halfway through drawing players.
+        for _,sample in ipairs(prepared) do
+            local success,position=pcall(freshRootPosition,sample.root)
+            if success then sample.position=position
+            else report(sample.record,sample.player,position) end
+        end
+        local frame=screenProjection(world.CurrentCamera)
+        for _,sample in ipairs(prepared) do
+            local success,err=pcall(updatePlayer,sample.player,sample.record,now,frame,sample)
+            if not success then report(sample.record,sample.player,err)
+            else sample.record.lastError=nil end
         end
         if capture then
             local success,err=pcall(captureTick,list,now)
