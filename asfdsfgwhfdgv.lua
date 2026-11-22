@@ -1085,7 +1085,7 @@ destroyInputBuffer,suspendInputBuffer=mountInputBuffer()
 
 local function mountBlockWatcher()
     local page=window:Tab("Block Detection")
-    page:Paragraph({Name="Use a move when unblocked",Content="Watch one player and press the selected move once when they are not blocking and within range. Re-arms after they block again. Aim the move yourself."})
+    page:Paragraph({Name="Use a move when unblocked",Content="Press the selected move as soon as the watched player changes from blocking to unblocked, within range. Waits for a fresh block cycle. Aim the move yourself."})
     local enabled=page:Toggle({Name="Auto move on unblock",Default=false,Flag="auto_unblock_enabled"})
     local target=page:Dropdown({Name="Target player",Options={"Select a player"},Default="Select a player",Flag="auto_unblock_target"})
     local move=page:Dropdown({Name="Move key",Options={"1","2","3","4"},Default="1",Flag="auto_unblock_move"})
@@ -1094,6 +1094,23 @@ local function mountBlockWatcher()
     local activeStatus=page:Paragraph({Name="Last active status",Content="No active check yet"})
     local stopped=false
     local context,fired=nil,false
+    local previousBlocking,openingAt
+    local heldKey,releaseAt
+    local cachedName,cachedRoster,cachedPlayer
+    local openingLifetime=.080
+    local function releaseMoveKey()
+        if not heldKey then return end
+        local key=heldKey
+        heldKey=nil;releaseAt=nil
+        if type(keyrelease)=="function" then pcall(keyrelease,key) end
+        macroHeldKeys[key]=nil
+        macroBusy=false
+    end
+    local function resetWatch()
+        releaseMoveKey()
+        context=nil;fired=false;previousBlocking=nil;openingAt=nil
+    end
+    enabled.Callback=function(on) if not on then resetWatch() end end
     local nextRosterRead,rosterSignature=0,nil
     local lastMessage
     local function message(text)
@@ -1191,14 +1208,23 @@ local function mountBlockWatcher()
     local function updateWatcher(now)
         if stopped or not alive then return end
         refreshTargets(now)
-        if not enabled.Value then context=nil;fired=false;message("Off");return end
-        local chosen
-        for _,player in ipairs(rosterPlayers) do
-            if tostring(player.Name)==tostring(target.Value) then chosen=player;break end
+        if heldKey then
+            local menuOK,menuOpen=pcall(function() return window:IsOpen() end)
+            local allowedOK,allowed=pcall(macroInputAllowed)
+            if now>=releaseAt or not enabled.Value or not menuOK or menuOpen or not allowedOK or not allowed then releaseMoveKey() end
         end
+        if not enabled.Value then resetWatch();message("Off");return end
+        local name=tostring(target.Value)
+        if cachedName~=name or cachedRoster~=rosterPlayers then
+            cachedName=name;cachedRoster=rosterPlayers;cachedPlayer=nil
+            for _,player in ipairs(rosterPlayers) do
+                if tostring(player.Name)==name then cachedPlayer=player;break end
+            end
+        end
+        local chosen=cachedPlayer
         local me=players.LocalPlayer
-        if not chosen or chosen==me then context=nil;fired=false;message("Choose a player in this server");return end
-        if isPlayerWhitelisted(chosen) then context=nil;fired=false;message("Paused: selected player is whitelisted");return end
+        if not chosen or chosen==me then resetWatch();message("Choose a player in this server");return end
+        if isPlayerWhitelisted(chosen) then resetWatch();message("Paused: selected player is whitelisted");return end
         local character=chosen.Character
         local ownCharacter=me and me.Character
         if not character or not ownCharacter then message("Waiting for characters");return end
@@ -1206,11 +1232,24 @@ local function mountBlockWatcher()
         if not slot or slot<1 or slot>4 or slot%1~=0 then message("Choose move key 1–4");return end
         local identity=whitelistIdentity(chosen)
         local current=tostring(identity)..":"..tostring(character.Address)..":"..tostring(ownCharacter.Address)..":"..tostring(slot)
-        if context~=current then context=current;fired=false end
+        if context~=current then resetWatch();context=current end
         local blocking=blockingState(character)
-        if blocking==nil then message("Waiting for readable blocking state");return end
-        if blocking then fired=false;message("Watching: target is blocking");return end
+        if blocking==nil then
+            previousBlocking=nil;openingAt=nil
+            message("Waiting for readable blocking state");return
+        end
+        if blocking then
+            previousBlocking=true;openingAt=nil;fired=false
+            message("Armed · waiting for target to unblock");return
+        end
+        if previousBlocking==true then openingAt=now end
+        previousBlocking=false
+        if heldKey then return end
         if fired then message("Pressed move "..tostring(slot).." · waiting for another block");return end
+        if not openingAt then message("Waiting for target to block, then unblock");return end
+        if now-openingAt>openingLifetime then
+            openingAt=nil;message("Opening passed · waiting for another block");return
+        end
         local root=character:FindFirstChild("HumanoidRootPart")
         local ownRoot=ownCharacter:FindFirstChild("HumanoidRootPart")
         local humanoid=character:FindFirstChildOfClass("Humanoid")
@@ -1226,25 +1265,53 @@ local function mountBlockWatcher()
         if macroBusy then message("Paused during macro");return end
         if type(keypress)~="function" or type(keyrelease)~="function" then message("Keyboard APIs unavailable");return end
         if moveReady(me,ownCharacter,slot)==false then message("Waiting for selected move cooldown");return end
+        -- Recheck at dispatch: do not send a late key after a slow lookup or
+        -- after the target has already raised their guard again.
+        local dispatchTime=tick and tick() or os.clock()
+        if dispatchTime-openingAt>openingLifetime then
+            openingAt=nil;message("Opening passed · waiting for another block");return
+        end
+        local finalBlocking=blockingState(character)
+        if finalBlocking~=false then
+            previousBlocking=finalBlocking;openingAt=nil
+            message("Target re-blocked before dispatch");return
+        end
         if suspendInputBuffer then suspendInputBuffer() end
         macroBusy=true
         local key=0x30+slot
-        local ok,err=pcall(macroTap,key)
-        if macroHeldKeys[key] then pcall(keyrelease,key);macroHeldKeys[key]=nil end
-        macroBusy=false
-        if ok then fired=true;message("Pressed move "..tostring(slot).." · waiting for another block")
-        else enabled:Set(false);message("Stopped: "..tostring(err)) end
+        heldKey=key;releaseAt=dispatchTime+.020;macroHeldKeys[key]=true
+        local ok,err=pcall(keypress,key)
+        if ok then
+            fired=true;openingAt=nil
+            message("Pressed move "..tostring(slot).." on unblock")
+        else
+            releaseMoveKey();enabled:Set(false)
+            message("Stopped: "..tostring(err))
+        end
     end
-    local heartbeat=game:GetService("RunService").Heartbeat:Connect(function()
-        if stopped or not alive then return end
+    local function poll()
+        if stopped or not alive then releaseMoveKey();return end
         local ok,err=pcall(updateWatcher,tick and tick() or os.clock())
-        if not ok then message("Detection error: "..tostring(err)) end
-    end)
+        if not ok then releaseMoveKey();message("Detection error: "..tostring(err)) end
+    end
+    local heartbeat
+    if task and type(task.spawn)=="function" and type(task.wait)=="function" then
+        -- Separate the time-sensitive state read from the emulated Heartbeat
+        -- cadence. This is a 2ms polling target, not a promised engine tick rate.
+        task.spawn(function()
+            while alive and not stopped do
+                poll()
+                task.wait(enabled.Value and .002 or .05)
+            end
+            releaseMoveKey()
+        end)
+    else heartbeat=game:GetService("RunService").Heartbeat:Connect(poll) end
     return function()
-        stopped=true;context=nil;fired=false
+        stopped=true;resetWatch()
         if heartbeat then pcall(function() heartbeat:Disconnect() end) end
     end
 end
+
 destroyBlockWatcher=mountBlockWatcher()
 
 macrosTab:Section("Aizen Macros")
