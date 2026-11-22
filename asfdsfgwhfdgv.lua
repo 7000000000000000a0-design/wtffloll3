@@ -1,35 +1,54 @@
 -- Matcha version. Drawing menu provided by Nova (Martinikaws).
 local old = _G.NanamiTimingMatcha
-if old and old.Destroy then pcall(old.Destroy) end
 assert(Drawing and type(Drawing.new) == "function", "Matcha Drawing API is required")
 local function resolveService(name)
-    local ok,value=pcall(function() return game:GetService(name) end)
-    if ok and value then return value end
-    ok,value=pcall(function() return game[name] end)
-    if ok and value then return value end
-    ok,value=pcall(function() return game:FindFirstChild(name) end)
-    if ok then return value end
+    local result
+    -- Use literal paths and assignments inside protected calls. This avoids
+    -- depending on instance values being returned across a VM callback.
+    if name=="Players" then
+        pcall(function() result=game.Players end)
+        if not result then pcall(function() result=game:GetService("Players") end) end
+        if not result then pcall(function() result=game:FindFirstChildOfClass("Players") end) end
+    elseif name=="Workspace" then
+        pcall(function() result=workspace end)
+        if not result then pcall(function() result=game.Workspace end) end
+        if not result then pcall(function() result=game:GetService("Workspace") end) end
+        if not result then pcall(function() result=game:FindFirstChildOfClass("Workspace") end) end
+    end
+    if not result then
+        pcall(function()
+            for _,service in ipairs(game:GetChildren()) do
+                if service.ClassName==name or service.Name==name then result=service;break end
+            end
+        end)
+    end
+    return result
 end
--- Resolve once: some Matcha builds return nil on later GetService calls.
--- Do this before creating the menu so a loading character cannot leave a
--- half-mounted menu behind.
 local startupPlayers,startupWorld
+-- Resolve services before unloading a previous working copy or creating UI.
 do
     local waitFn=task and task.wait or wait
     local now=tick or os.clock
     local deadline=now()+15
     repeat
-        startupPlayers=startupPlayers or resolveService("Players")
-        startupWorld=startupWorld or resolveService("Workspace")
-        local ok,localPlayer=pcall(function() return startupPlayers.LocalPlayer end)
-        if startupPlayers and startupWorld and ok and localPlayer then break end
+        -- Re-resolve every pass so a stale startup wrapper is not cached.
+        startupPlayers=resolveService("Players")
+        startupWorld=resolveService("Workspace")
+        local localPlayer
+        pcall(function() localPlayer=startupPlayers.LocalPlayer end)
+        if startupPlayers and startupWorld and localPlayer then break end
         if type(waitFn)~="function" or now()>=deadline then
-            print("[Startup] Players, Workspace or LocalPlayer is not available. Wait for the game to load, then run the script again.")
+            local missing={}
+            if not startupPlayers then missing[#missing+1]="Players" end
+            if not startupWorld then missing[#missing+1]="Workspace" end
+            if not localPlayer then missing[#missing+1]="LocalPlayer" end
+            print("[Startup] Matcha cannot read "..table.concat(missing,", ")..". Reconnect Matcha to this Roblox session, then rerun. No menu was created.")
             return
         end
         waitFn(.1)
     until false
 end
+if old and old.Destroy then pcall(old.Destroy) end
 local url = "https://raw.githubusercontent.com/Martinikaws/Nova/88f5bd44551d03d6a01ba07b761519eb3d8ccb34/Nova.lua"
 local source
 if type(httpget) == "function" then source = httpget(url) else source = game:HttpGet(url) end
