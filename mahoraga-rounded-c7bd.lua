@@ -2194,6 +2194,61 @@ local function mountPlayerESP()
         state.displaySeconds=seconds;state.displayRevision=state.revision
         return seconds
     end
+    local guardbreakKeys={"Guardbreak","GuardBreak","Guardbreaks","GuardBreaks",
+        "GUARDBREAK","GUARDBREAKS","GuardBreakMove","CanGuardBreak","BreaksGuard","BlockBreak","Blockbreak","GB"}
+    local function guardbreakBoolean(value)
+        if type(value)=="boolean" then return value end
+        if number(value) then return value>0 end
+        if type(value)=="string" then
+            local low=value:lower():gsub("[%s_%-]","")
+            if low=="true" or low=="yes" or low=="1" or low=="on"
+                or low=="guardbreak" or low=="guardbreaks" or low=="blockbreak" then return true end
+            if low=="false" or low=="no" or low=="0" or low=="off" or low=="none" then return false end
+        end
+        return nil
+    end
+    local function hudGuardbreak(player,slot,name)
+        if not slot then return nil end
+        local rows=child(child(child(player,"PlayerGui"),"HUD"),"Moves")
+        local row=child(rows,tostring(slot))
+        if not row then return nil end
+        local title=child(row,"TextLabel")
+        local titleOK,titleText=pcall(function() return title and title.Text end)
+        if titleOK and type(titleText)=="string" and titleText~="" and titleText~=name then return nil end
+        local rowOK,rowVisible=pcall(function() return row.Visible end)
+        if rowOK and rowVisible==false then return nil end
+        local ok,labels=pcall(function() return row:GetChildren() end)
+        if not ok or type(labels)~="table" then return nil end
+        for _,label in ipairs(labels) do
+            local readable,text,visible=pcall(function() return label.Text,label.Visible end)
+            if readable and visible==true and type(text)=="string" then
+                local low=text:lower():gsub("[%s_%-]","")
+                if low=="guardbreak" or low=="guardbreaks" or low=="blockbreak" then return true end
+            end
+        end
+        return nil
+    end
+    local function readGuardbreak(player,move,config,slot,name)
+        for _,container in ipairs({config,move}) do
+            for _,key in ipairs(guardbreakKeys) do
+                local flag=guardbreakBoolean(attribute(container,key))
+                if flag~=nil then return flag end
+                local marker=child(container,key)
+                if marker then
+                    local ok,value=pcall(function() return marker.Value end)
+                    -- Preserve an explicit false BoolValue instead of treating
+                    -- the marker's presence alone as enabled.
+                    if ok then
+                        local markerFlag=guardbreakBoolean(value)
+                        if markerFlag~=nil then return markerFlag end
+                    end
+                    local classOK,class=pcall(function() return marker.ClassName end)
+                    if classOK and (class=="Folder" or class=="Configuration") then return true end
+                end
+            end
+        end
+        return hudGuardbreak(player,slot,name)
+    end
     local function readMoves(player,character,record,now)
         local moves,seen={},{}
         if record then record.cooldowns=record.cooldowns or {} end
@@ -2243,7 +2298,8 @@ local function mountPlayerESP()
                     local key=tostring(identity)
                     present[key]=true
                     moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,
-                        source=source,instance=identity}
+                        source=source,instance=identity,
+                        guardbreak=readGuardbreak(player,move,config,slot,tostring(name))}
                 elseif depth>0 and move.ClassName=="Folder" and move.Name~=".Config" then
                     scan(move,depth-1)
                 end
@@ -2266,6 +2322,7 @@ local function mountPlayerESP()
             end
         end
         for _,move in ipairs(moves) do
+            if move.guardbreak==nil then move.guardbreak=hudGuardbreak(player,move.slot,move.name) end
             if record then
                 move.cd,move.source=trackCooldown(record.cooldowns,tostring(move.instance),move.cd,move.source,now)
             end
@@ -2601,7 +2658,7 @@ local function mountPlayerESP()
         local value=move.cd
         local known=number(value)
         local ready=known and value>=20
-        local tint=ready and Color3.fromRGB(0,110,255) or Color3.fromRGB(250,0,0)
+        local tint=move.guardbreak==true and Color3.fromRGB(0,110,255) or Color3.fromRGB(250,0,0)
         local radius=math.min(w,h)*.16
         square(record,key.."Body",x,y,w,h,tint)
         set(record.drawings[key.."Body"],"ZIndex",901)
