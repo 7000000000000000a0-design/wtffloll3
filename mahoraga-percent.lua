@@ -1899,7 +1899,7 @@ local function mountPlayerESP()
                 return cd,source
             end
             if not state.active or (state.last and cd<state.last-.5) then
-                state.points={};state.active=true
+                state.points={};state.active=true;state.rate=nil
             end
             local points=state.points
             if #points==0 or cd~=points[#points].cd then
@@ -1969,7 +1969,14 @@ local function mountPlayerESP()
                     local key=tostring(identity)
                     present[key]=true
                     if record then cd,source=trackCooldown(record.cooldowns,key,cd,source,now) end
-                    moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,source=source,instance=identity}
+                    local cooldownEndsAt
+                    local history=record and record.cooldowns[key]
+                    if number(cd) and cd<20 and history and number(history.rate)
+                        and history.rate>0 and number(history.last) and number(history.seen) then
+                        cooldownEndsAt=history.seen+math.max(0,20-history.last)/history.rate
+                    end
+                    moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,
+                        source=source,instance=identity,cooldownEndsAt=cooldownEndsAt}
                 elseif depth>0 and move.ClassName=="Folder" and move.Name~=".Config" then
                     scan(move,depth-1)
                 end
@@ -2202,7 +2209,7 @@ local function mountPlayerESP()
             set(record.drawings[key.."Fill"],"ZIndex",901)
         end
     end
-    local function moveBox(record,index,move,x,y,w,h)
+    local function moveBox(record,index,move,x,y,w,h,now)
         local key="moveBox"..index
         local value=move.cd
         local known=number(value)
@@ -2251,10 +2258,10 @@ local function mountPlayerESP()
         local count=math.min(2,#lines)
         local nameY=y+12+math.max(0,(h-27-count*11)/2)
         for row=1,count do text("Name"..row,lines[row],x+w/2,nameY+(row-1)*11,10,true) end
+        local seconds=number(move.cooldownEndsAt) and number(now)
+            and math.max(0,move.cooldownEndsAt-now) or nil
         local state=not known and "UNKNOWN" or ready and "READY"
-            or (math.floor(math.max(0,math.min(20,value))*5+.5).."%")
-        if move.source=="estimated" then state=state.." EST"
-        elseif move.source=="last observed" then state=state.." LAST" end
+            or (seconds and (math.max(1,math.ceil(seconds-.000001)).."s") or "...")
         text("State",state,x+w/2,y+h-12,9,true)
     end
     local function updatePlayer(player,record,now)
@@ -2320,10 +2327,10 @@ local function mountPlayerESP()
             if boxX+boxWidth>camera.ViewportSize.X-4 then boxX=(left or point.X-30)-46-boxWidth end
             local boxY=anchorTop+(anchorHeight-(count*boxHeight+(count-1)*gap))/2
             if #record.moves==0 then
-                moveBox(record,1,{name="Moves",source="unknown"},boxX,boxY,boxWidth,boxHeight)
+                moveBox(record,1,{name="Moves",source="unknown"},boxX,boxY,boxWidth,boxHeight,now)
             else
                 for i,move in ipairs(record.moves) do
-                    moveBox(record,i,move,boxX,boxY+(i-1)*(boxHeight+gap),boxWidth,boxHeight)
+                    moveBox(record,i,move,boxX,boxY+(i-1)*(boxHeight+gap),boxWidth,boxHeight,now)
                 end
             end
         end
