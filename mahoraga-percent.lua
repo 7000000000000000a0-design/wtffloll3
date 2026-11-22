@@ -2221,7 +2221,7 @@ local function mountPlayerESP()
         local d=record.drawings[key]
         if d then return d end
         d=Drawing.new(kind);record.drawings[key]=d;ownedDrawings[#ownedDrawings+1]=d
-        d.Visible=false;d.Transparency=1;d.ZIndex=900
+        d.Visible=false;d.Transparency=1;d.ZIndex=kind=="Text" and 902 or 900
         if kind=="Text" then d.Size=14;d.Font=2;d.Center=false;d.Outline=true
         else d.Filled=true end
         return d
@@ -2281,9 +2281,11 @@ local function mountPlayerESP()
         local value=ratio~=nil and string.format("%.0f%%",math.max(0,math.min(1,ratio))*100) or "--%"
         label(record,percentKey,value,percentX,top,color)
         square(record,key.."Outline",x-1,top-1,4,height+2,Color3.fromRGB(15,15,18))
+        set(record.drawings[key.."Outline"],"ZIndex",900)
         if ratio~=nil then
             local fill=height*math.max(0,math.min(1,ratio))
             square(record,key.."Fill",x,top+height-fill,2,fill,color)
+            set(record.drawings[key.."Fill"],"ZIndex",901)
         end
     end
     local function updatePlayer(player,record,now)
