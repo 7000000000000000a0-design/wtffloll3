@@ -3970,7 +3970,9 @@ local function mountPlayerESP()
     local function sidebarMoveSize(width,count,scale)
         local gap=4*scale
         local multiplier=math.max(.25,math.min(2,(tonumber(moveSize.Value) or 100)/100))
-        return math.max(1,math.min(64*scale*multiplier,(width-gap*(count-1))/count)),gap
+        count=2*math.ceil(math.max(4,count)/2)
+        local nameWidth=math.min(110*scale,width*.34)
+        return math.max(1,math.min(64*scale*multiplier,(width-nameWidth-count*gap)/count)),gap
     end
     local function sidebarLayout(viewWidth,viewHeight,count,requestedPage,entries)
         local scale=math.max(.65,math.min(1.3,viewHeight/900))
@@ -3984,7 +3986,7 @@ local function mountPlayerESP()
                 local size=sidebarMoveSize(width,math.max(1,#entry.sample.record.moves),scale)
                 largestCard=math.max(largestCard,size)
             end
-            rowHeight=rowHeight+largestCard+8*scale
+            rowHeight=rowHeight+math.max(0,largestCard+8*scale-23*scale)
         end
         local rows=math.max(1,math.floor((viewHeight-top-42*scale)/rowHeight))
         local pages=math.max(1,math.ceil(count/rows))
@@ -4050,22 +4052,26 @@ local function mountPlayerESP()
             row.used={}
             local x,y=layout.left,layout.top+(index-layout.first)*layout.rowHeight
             local width=layout.width
+            local size,gap=sidebarMoveSize(width,math.max(1,#data.moves),scale)
+            local groupCount=math.ceil(math.max(4,#data.moves)/2)
+            local headerShift=movesOn.Value and math.max(0,size+8*scale-23*scale) or 0
+            local nameWidth=movesOn.Value and width-2*groupCount*(size+gap) or width
             local name=object(row,"Name","Text")
-            set(name,"Size",math.max(9,math.floor(16*scale+.5)))
+            set(name,"Size",math.max(1,math.floor(math.min(16*scale,nameWidth/(math.max(1,#identity)*.65)))))
             set(name,"Center",true)
-            label(row,"Name",identity,x+width/2,y,modeRed)
-            sidebarMeter(row,"Health",data.healthRatio,x,y+23*scale,width,15*scale,4,green,scale)
+            label(row,"Name",identity,x+width/2,y+(movesOn.Value and size/2 or 0),modeRed)
+            sidebarMeter(row,"Health",data.healthRatio,x,y+23*scale+headerShift,width,15*scale,4,green,scale)
             if data.health~=nil and data.maxHealth~=nil then
                 local hpText=object(row,"HealthText","Text")
                 local hpSize=math.max(8,math.floor(12*scale+.5))
                 set(hpText,"Size",hpSize);set(hpText,"Center",true);set(hpText,"ZIndex",904)
                 label(row,"HealthText",string.format("%d / %d",math.ceil(data.health),math.ceil(data.maxHealth)),
-                    x+width/2,y+(23+15/2)*scale,white)
+                    x+width/2,y+(23+15/2)*scale+headerShift,white)
             end
-            sidebarMeter(row,"Mode",data.mode,x+4*scale,y+44*scale,width-8*scale,12*scale,10,sidebarModeRed,scale)
+            sidebarMeter(row,"Mode",data.mode,x+4*scale,y+44*scale+headerShift,width-8*scale,12*scale,10,sidebarModeRed,scale)
             if data.mode2~=nil and data.showMode2 then
                 -- The third row is exclusively the actual secondary-mode reading.
-                sidebarMeter(row,"Mode2",data.mode2,x+4*scale,y+62*scale,width-8*scale,12*scale,10,secondPurple,scale)
+                sidebarMeter(row,"Mode2",data.mode2,x+4*scale,y+62*scale+headerShift,width-8*scale,12*scale,10,secondPurple,scale)
 
             end
             if movesOn.Value then
@@ -4073,11 +4079,14 @@ local function mountPlayerESP()
                 for _,move in ipairs(data.moves) do moves[#moves+1]=move end
                 table.sort(moves,function(a,b) return (tonumber(a.slot) or 99)<(tonumber(b.slot) or 99) end)
                 if #moves==0 then moves[1]={name="Moves",source="unknown"} end
-                local size,gap=sidebarMoveSize(width,#moves,scale)
-                local startX=x+(width-(#moves*size+(#moves-1)*gap))/2
-                local moveY=y+(data.mode2~=nil and data.showMode2 and 82 or 64)*scale
                 for index,move in ipairs(moves) do
-                    moveBox(row,index,move,startX+(index-1)*(size+gap),moveY,size,size,now)
+                    local cardX
+                    if index<=groupCount then
+                        cardX=x+(index-1)*(size+gap)
+                    else
+                        cardX=x+width-groupCount*size-(groupCount-1)*gap+(index-groupCount-1)*(size+gap)
+                    end
+                    moveBox(row,index,move,cardX,y,size,size,now)
                 end
             end
             for key,drawing in pairs(row.drawings) do
