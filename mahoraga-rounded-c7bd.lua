@@ -401,7 +401,7 @@ local players=game:GetService("Players")
 local world=game:GetService("Workspace")
 local armedUntil=0
 local lastKeys={}
-local positionOffset,guiSizeOffset
+local positionOffset,guiSizeOffset,visualEngineOffset,viewMatrixOffset
 -- Matcha's screen coordinates can be unreliable on rotated BillboardGui bars.
 -- The reference script reads the UDim2 X.Scale float instead; never write memory.
 if type(memory_read) == "function" then
@@ -417,6 +417,13 @@ if type(memory_read) == "function" then
     local sizeValue=ok and data and data.Offsets and data.Offsets.GuiObject and data.Offsets.GuiObject.Size
     if type(sizeValue)=="string" then sizeValue=tonumber(sizeValue) end
     if type(sizeValue)=="number" and sizeValue>0 and sizeValue<8192 and sizeValue%4==0 then guiSizeOffset=sizeValue end
+    local visual=ok and data and data.Offsets and data.Offsets.VisualEngine
+    if visual then
+        local pointer,matrix=tonumber(visual.Pointer),tonumber(visual.ViewMatrix)
+        if pointer and pointer>4096 and pointer<1073741824 and matrix and matrix>0 and matrix<8192 then
+            visualEngineOffset,viewMatrixOffset=pointer,matrix
+        end
+    end
 end
 local function readRatio(bar,cutter)
     local ok,value=pcall(function()return cutter.Position.X.Scale end)
@@ -1032,6 +1039,30 @@ local function screenProjection(camera)
     if not camera then return nil end
     local view=camera.ViewportSize
     local frame={camera=camera,width=view.X,height=view.Y}
+    -- One renderer matrix for the whole draw pass. Native projection calls and
+    -- camera properties can otherwise come from different camera updates.
+    if visualEngineOffset and viewMatrixOffset and type(getbase)=="function" and type(memory_read)=="function" then
+        pcall(function()
+            local engine=memory_read("uintptr_t",getbase()+visualEngineOffset)
+            if type(engine)~="number" or engine<4096 then return end
+            local address=engine+viewMatrixOffset
+            local m={}
+            for i=1,16 do
+                local v=memory_read("float",address+(i-1)*4)
+                if type(v)~="number" or v~=v or math.abs(v)>1e12 then return end
+                m[i]=v
+            end
+            -- Reject a matrix that changed while its rows were being read.
+            for i=1,16 do
+                if memory_read("float",address+(i-1)*4)~=m[i] then return end
+            end
+            local upLength=math.sqrt(m[5]^2+m[6]^2+m[7]^2)
+            local forwardLength=math.sqrt(m[13]^2+m[14]^2+m[15]^2)
+            if upLength<.01 or upLength>100 or forwardLength<.9 or forwardLength>1.1 then return end
+            frame.renderer=m
+            frame.pixelsPerDepth=view.Y*.5*upLength
+        end)
+    end
     pcall(function()
         local fov=camera.FieldOfView
         if type(fov)=="number" and fov>0 and fov<180 then
@@ -1072,6 +1103,25 @@ end
 local function projectToScreen(position,camera,frame)
     if not camera or not position then return nil,false end
     frame=frame or screenProjection(camera)
+    if frame and frame.renderer then
+        local m=frame.renderer
+        local x,y,z=position.X,position.Y,position.Z
+        local depth=m[13]*x+m[14]*y+m[15]*z+m[16]
+        if depth<=.01 then return nil,false,depth end
+        local sx=frame.width*.5*(1+(m[1]*x+m[2]*y+m[3]*z+m[4])/depth)
+        local sy=frame.height*.5*(1-(m[5]*x+m[6]*y+m[7]*z+m[8])/depth)
+        return Vector2.new(sx,sy),sx>=0 and sy>=0 and sx<=frame.width and sy<=frame.height,depth
+    end
+    -- Use the captured camera pose before APIs which re-sample the camera.
+    if frame and frame.matrix then
+        local m=frame.matrix
+        local dx,dy,dz=position.X-m[1],position.Y-m[2],position.Z-m[3]
+        local depth=-(dx*m[6]+dy*m[9]+dz*m[12])
+        if depth<=.01 then return nil,false,depth end
+        local x=frame.width/2+(dx*m[4]+dy*m[7]+dz*m[10])*frame.focal/depth
+        local y=frame.height/2-(dx*m[5]+dy*m[8]+dz*m[11])*frame.focal/depth
+        return Vector2.new(x,y),x>=0 and y>=0 and x<=frame.width and y<=frame.height,depth
+    end
     local function accept(point,visible)
         if not point then return nil,false end
         local ok,x,y=pcall(function() return point.X,point.Y end)
@@ -2223,8 +2273,51 @@ local function mountPlayerESP()
             taggedGuardMoves=found
         end
     end
+    local function memoryGameTag(instance,tag)
+        if not instance or type(memory_read)~="function" then return nil end
+        -- Current Roblox component map: kind 12 is the NUL-separated tag string.
+        -- Matcha's string reader stops at NUL, so read every byte explicitly.
+        local ok,result=pcall(function()
+            local address=instance.Address
+            if not number(address) or address<4096 then return nil end
+            local map=memory_read("uintptr_t",address+0x38)
+            if not number(map) or map<4096 then return nil end
+            local first=memory_read("uintptr_t",map)
+            local last=memory_read("uintptr_t",map+8)
+            if not number(first) or not number(last) or first<4096 or last<first
+                or last-first>16*64 or (last-first)%16~=0 then return nil end
+            for entry=first,last-1,16 do
+                local kind=memory_read("int",entry+8)%65536
+                if kind==12 then
+                    local component=memory_read("uintptr_t",entry)
+                    if not number(component) or component<4096 then return nil end
+                    local length=memory_read("uintptr_t",component+0x10)
+                    local capacity=memory_read("uintptr_t",component+0x18)
+                    if not number(length) or not number(capacity) or length<0 or length>2048
+                        or capacity<length or capacity>4096 then return nil end
+                    local data=capacity>=16 and memory_read("uintptr_t",component) or component
+                    if not number(data) or data<4096 then return nil end
+                    local current={}
+                    for i=0,length-1 do
+                        local byte=memory_read("byte",data+i)
+                        if not number(byte) or byte<0 or byte>255 then return nil end
+                        if byte==0 then
+                            if table.concat(current)==tag then return true end
+                            current={}
+                        else current[#current+1]=string.char(byte) end
+                    end
+                    return table.concat(current)==tag
+                end
+            end
+            return nil
+        end)
+        if ok then return result end
+        return nil
+    end
     local function gameTag(instance,tag)
         if not instance then return nil end
+        local direct=memoryGameTag(instance,tag)
+        if direct~=nil then return direct end
         if tag=="Guardbreaks" and taggedGuardMoves[characterKey(instance)] then return true end
         local knownFalse=false
         local ok,value=pcall(function() return instance:HasTag(tag) end)
@@ -2325,14 +2418,14 @@ local function mountPlayerESP()
         return nil
     end
     local function readGuardbreak(player,move,config,slot,name,target)
-        local hud=hudGuardbreak(player,slot,name)
-        if hud~=nil then return hud end
         -- UpdateMoves also listens to this exact attribute for runtime changes.
         local override=guardbreakBoolean(attribute(move,"GUARDBREAKS"))
         if override~=nil then return override end
         target=target or move
         local tagged=gameTag(target,"Guardbreaks")
         if tagged~=nil then return tagged end
+        local hud=hudGuardbreak(player,slot,name)
+        if hud~=nil then return hud end
         local containers=target==move and {config,move} or {target}
         for _,container in ipairs(containers) do
             for _,key in ipairs(guardbreakKeys) do
@@ -2537,30 +2630,8 @@ local function mountPlayerESP()
         return projectToScreen(position,camera,frame)
     end
     local function projectAnchor(record,position,camera,frame,now)
-        -- Reject isolated native projection samples. Center and size are then
-        -- smoothed together once the complete pose has been measured.
-        local samples,xs,ys={},{},{}
-        for i=1,3 do
-            local point,visible,depth=project(position,camera,frame)
-            if point and number(point.X) and number(point.Y) then
-                samples[#samples+1]={x=point.X,y=point.Y,visible=visible,depth=depth}
-                xs[#xs+1]=point.X;ys[#ys+1]=point.Y
-            end
-        end
-        if #samples==0 then return nil,false end
-        local function median(values)
-            table.sort(values)
-            local n=#values
-            if n%2==0 then return (values[n/2]+values[n/2+1])/2 end
-            return values[(n+1)/2]
-        end
-        local x,y=median(xs),median(ys)
-        local selected,best
-        for _,sample in ipairs(samples) do
-            local error=math.abs(sample.x-x)+math.abs(sample.y-y)
-            if not best or error<best then selected=sample;best=error end
-        end
-        return Vector2.new(x,y),selected.visible,selected.depth
+        -- Root position is the sole world anchor; never average screen samples.
+        return project(position,camera,frame)
     end
     local function object(record,key,kind)
         local d=record.drawings[key]
@@ -2580,92 +2651,6 @@ local function mountPlayerESP()
         local d=object(record,key,"Square")
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
-    end
-    local function smoothESPPose(record,point,scale,worldPosition,camera,frame,now)
-        local previous=record.poseMotion
-        local logScale=math.log(scale)
-        local reset=not previous or previous.camera~=camera or now<previous.time or now-previous.time>.25
-        if previous and not reset then
-            if frame and frame.fov and previous.fov and math.abs(frame.fov-previous.fov)>3 then reset=true end
-            pcall(function() if (worldPosition-previous.worldPosition).Magnitude>12 then reset=true end end)
-            if frame and frame.position and previous.cameraPosition then
-                pcall(function() if (frame.position-previous.cameraPosition).Magnitude>12 then reset=true end end)
-            end
-            if math.abs(point.X-previous.x)>300 or math.abs(point.Y-previous.y)>300 then reset=true end
-        end
-        if reset then
-            previous={camera=camera,time=now,x=point.X,y=point.Y,l=logScale,samples={}}
-            record.poseMotion=previous
-        end
-        local samples=previous.samples
-        if #samples==0 or now>samples[#samples].time then
-            samples[#samples+1]={x=point.X,y=point.Y,l=logScale,time=now}
-        end
-        while #samples>11 or (#samples>3 and now-samples[1].time>.1) do table.remove(samples,1) end
-        local function fit(list)
-            local n,st,stt,sx,sy,sl,stx,sty,stl=#list,0,0,0,0,0,0,0,0
-            for _,sample in ipairs(list) do
-                local t=sample.time-now
-                st=st+t;stt=stt+t*t
-                sx=sx+sample.x;sy=sy+sample.y;sl=sl+sample.l
-                stx=stx+t*sample.x;sty=sty+t*sample.y;stl=stl+t*sample.l
-            end
-            local denominator=n*stt-st*st
-            if n<3 or denominator<=.000000001 then
-                return {x=point.X,y=point.Y,l=logScale,vx=0,vy=0,vl=0}
-            end
-            local vx=(n*stx-st*sx)/denominator
-            local vy=(n*sty-st*sy)/denominator
-            local vl=(n*stl-st*sl)/denominator
-            return {x=(sx-vx*st)/n,y=(sy-vy*st)/n,l=(sl-vl*st)/n,vx=vx,vy=vy,vl=vl}
-        end
-        local trajectory=fit(samples)
-        local residuals={}
-        for _,sample in ipairs(samples) do
-            local t=sample.time-now
-            local dx=sample.x-(trajectory.x+trajectory.vx*t)
-            local dy=sample.y-(trajectory.y+trajectory.vy*t)
-            local ds=(sample.l-(trajectory.l+trajectory.vl*t))*80
-            residuals[#residuals+1]=math.sqrt(dx*dx+dy*dy+ds*ds)
-        end
-        table.sort(residuals)
-        local noise=residuals[math.floor((#residuals+1)/2)] or 0
-        local threshold=math.max(1,noise*2.5)
-        local clean={}
-        for _,sample in ipairs(samples) do
-            local t=sample.time-now
-            local dx=sample.x-(trajectory.x+trajectory.vx*t)
-            local dy=sample.y-(trajectory.y+trajectory.vy*t)
-            local ds=(sample.l-(trajectory.l+trajectory.vl*t))*80
-            if dx*dx+dy*dy+ds*ds<=threshold*threshold then clean[#clean+1]=sample end
-        end
-        if #clean>=3 then trajectory=fit(clean) end
-        -- Only predict sustained movement, not alternating one-frame noise.
-        local span=math.max(.001,now-samples[1].time)
-        if math.sqrt(trajectory.vx^2+trajectory.vy^2)*span<math.max(1,noise*2.5) then
-            trajectory.vx=0;trajectory.vy=0
-        end
-        local dt=math.max(0,math.min(.1,now-previous.time))
-        if dt>0 then
-            local response=55
-            local blend=1-math.exp(-response*dt)
-            -- Short motion compensation avoids the trailing of a plain low-pass.
-            local lead=math.min(.012,dt/(math.exp(response*dt)-1))
-            local tx=trajectory.x+trajectory.vx*lead
-            local ty=trajectory.y+trajectory.vy*lead
-            local tl=trajectory.l+math.max(-2.5,math.min(2.5,trajectory.vl))*lead
-            previous.x=previous.x+(tx-previous.x)*blend
-            previous.y=previous.y+(ty-previous.y)*blend
-            previous.l=previous.l+(tl-previous.l)*blend
-        end
-        previous.time=now;previous.worldPosition=worldPosition
-        previous.cameraPosition=frame and frame.position or nil
-        previous.fov=frame and frame.fov or nil
-        local anchorX=point.X+math.max(-.75,math.min(.75,previous.x-point.X))
-        local anchorY=point.Y+math.max(-.75,math.min(.75,previous.y-point.Y))
-        local fittedScale=math.exp(previous.l)
-        fittedScale=math.max(scale*.98,math.min(scale*1.02,fittedScale))
-        return Vector2.new(anchorX,anchorY),fittedScale
     end
     local function bodyBounds(record,character,root,camera,rootPosition,rootPoint,frame,now)
         -- Read sizes rather than animated limb positions. Refresh on every draw so
@@ -2703,7 +2688,11 @@ local function mountPlayerESP()
         local scale
         -- Derive size from one captured camera pose, not differences between
         -- screen projections sampled at different points in camera motion.
-        if frame and frame.focal then
+        if frame and frame.renderer then
+            local m=frame.renderer
+            local depth=m[13]*center.X+m[14]*center.Y+m[15]*center.Z+m[16]
+            if depth>.01 then scale=frame.pixelsPerDepth/depth end
+        elseif frame and frame.focal then
             local depth
             if frame.matrix then
                 local m=frame.matrix
@@ -2727,9 +2716,8 @@ local function mountPlayerESP()
             if top and bottom then scale=math.abs(bottom.Y-top.Y)/(upper+lower) end
             if not number(scale) or scale<.1 then scale=record.lastScale or 12 end
         end
-        -- Filter center and size as one pose, keeping every bar and card together.
-        now=now or (tick and tick() or os.clock())
-        point,scale=smoothESPPose(record,point,scale,center,camera,frame,now)
+        -- Position and scale use the same world anchor and same renderer matrix.
+        -- No screen-space inertia, prediction, median sampling or catch-up drift.
         record.lastScale=scale
         local height=(upper+lower)*scale
         if height<3 then height=3;scale=height/(upper+lower) end
