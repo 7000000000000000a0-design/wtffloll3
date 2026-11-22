@@ -401,7 +401,7 @@ local players=game:GetService("Players")
 local world=game:GetService("Workspace")
 local armedUntil=0
 local lastKeys={}
-local positionOffset,guiSizeOffset,visualEngineOffset,viewMatrixOffset
+local positionOffset,guiSizeOffset,visualEngineOffset,viewMatrixOffset,renderDimensionsOffset,partPrimitiveOffset,primitivePositionOffset
 -- Matcha's screen coordinates can be unreliable on rotated BillboardGui bars.
 -- The reference script reads the UDim2 X.Scale float instead; never write memory.
 if type(memory_read) == "function" then
@@ -417,11 +417,18 @@ if type(memory_read) == "function" then
     local sizeValue=ok and data and data.Offsets and data.Offsets.GuiObject and data.Offsets.GuiObject.Size
     if type(sizeValue)=="string" then sizeValue=tonumber(sizeValue) end
     if type(sizeValue)=="number" and sizeValue>0 and sizeValue<8192 and sizeValue%4==0 then guiSizeOffset=sizeValue end
+    local offsets=ok and data and data.Offsets
+    local primitive=offsets and offsets.BasePart and tonumber(offsets.BasePart.Primitive)
+    local position=offsets and offsets.Primitive and tonumber(offsets.Primitive.Position)
+    if primitive and position and primitive>0 and primitive<8192 and position>0 and position<8192 then
+        partPrimitiveOffset,primitivePositionOffset=primitive,position
+    end
     local visual=ok and data and data.Offsets and data.Offsets.VisualEngine
     if visual then
         local pointer,matrix=tonumber(visual.Pointer),tonumber(visual.ViewMatrix)
         if pointer and pointer>4096 and pointer<1073741824 and matrix and matrix>0 and matrix<8192 then
             visualEngineOffset,viewMatrixOffset=pointer,matrix
+            renderDimensionsOffset=tonumber(visual.Dimensions)
         end
     end
 end
@@ -1045,6 +1052,13 @@ local function screenProjection(camera)
         pcall(function()
             local engine=memory_read("uintptr_t",getbase()+visualEngineOffset)
             if type(engine)~="number" or engine<4096 then return end
+            if renderDimensionsOffset and renderDimensionsOffset>0 and renderDimensionsOffset<8192 then
+                local width=memory_read("float",engine+renderDimensionsOffset)
+                local height=memory_read("float",engine+renderDimensionsOffset+4)
+                if type(width)=="number" and type(height)=="number" and width>=64 and height>=64 and width<=32768 and height<=32768 then
+                    frame.width,frame.height=width,height
+                end
+            end
             local address=engine+viewMatrixOffset
             local m={}
             for i=1,16 do
@@ -1060,9 +1074,10 @@ local function screenProjection(camera)
             local forwardLength=math.sqrt(m[13]^2+m[14]^2+m[15]^2)
             if upLength<.01 or upLength>100 or forwardLength<.9 or forwardLength>1.1 then return end
             frame.renderer=m
-            frame.pixelsPerDepth=view.Y*.5*upLength
+            frame.pixelsPerDepth=frame.height*.5*upLength
         end)
     end
+    if frame.renderer then return frame end
     pcall(function()
         local fov=camera.FieldOfView
         if type(fov)=="number" and fov>0 and fov<180 then
@@ -2652,9 +2667,8 @@ local function mountPlayerESP()
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
     end
-    local function bodyBounds(record,character,root,camera,rootPosition,rootPoint,frame,now)
-        -- Read sizes rather than animated limb positions. Refresh on every draw so
-        -- transforms, scaling and late-loading rig parts immediately update bounds.
+    local function refreshBodyBounds(record,character,root,now)
+        if record.bounds and now<(record.nextBounds or 0) then return end
         local function dimension(part,axis,fallback)
             local ok,value=pcall(function() return part.Size[axis] end)
             if ok and number(value) and value>0 then return value end
@@ -2681,6 +2695,28 @@ local function mountPlayerESP()
         local lower=rootHalf+(foot and (hip or legHeight) or legHeight+(hip or 0))
         local halfWidth=dimension(torso,"X",2)/2+dimension(arm,"X",1)+.15
         record.bounds={upper=upper,lower=lower,halfWidth=halfWidth}
+        record.nextBounds=now+.25
+    end
+    local function freshRootPosition(root)
+        if partPrimitiveOffset and primitivePositionOffset and type(memory_read)=="function" then
+            local ok,result=pcall(function()
+                local primitive=memory_read("uintptr_t",root.Address+partPrimitiveOffset)
+                if not number(primitive) or primitive<4096 then return nil end
+                local address=primitive+primitivePositionOffset
+                local x=memory_read("float",address)
+                local y=memory_read("float",address+4)
+                local z=memory_read("float",address+8)
+                if not number(x) or not number(y) or not number(z) or math.abs(x)>1e7 or math.abs(y)>1e7 or math.abs(z)>1e7 then return nil end
+                return Vector3.new(x,y,z)
+            end)
+            if ok and result then return result end
+        end
+        return root.Position
+    end
+    local function bodyBounds(record,character,root,camera,rootPosition,rootPoint,frame,now)
+        local bounds=record.bounds
+        if not bounds then return nil end
+        local upper,lower,halfWidth=bounds.upper,bounds.lower,bounds.halfWidth
         local center=rootPosition or root.Position
         local point=rootPoint or project(center,camera,frame)
         if not point or not number(point.X) or not number(point.Y) then return nil end
@@ -2790,27 +2826,22 @@ local function mountPlayerESP()
             label(record,key..suffix,text,tx,ty,white)
         end
         local textScale=math.min(w/64,h/64)
-        record.moveTextLayouts=record.moveTextLayouts or {}
-        local layout=record.moveTextLayouts[key]
-        if not layout then layout={compact=h<20,lines=h>=36 and 2 or 1};record.moveTextLayouts[key]=layout end
-        local function font(name,raw)
-            local previous=layout[name]
-            if not previous or raw>previous+.7 or raw<previous-.7 then
-                previous=math.max(4,math.floor(raw+.5));layout[name]=previous
-            end
-            return previous
-        end
-        local nameSize=font("nameSize",14*textScale)
-        local stateSize=font("stateSize",8*textScale)
-        local slotSize=font("slotSize",10*textScale)
-        if h>22 then layout.compact=false elseif h<18 then layout.compact=true end
-        if h>38 then layout.lines=2 elseif h<34 then layout.lines=1 end
-        if not layout.compact then
-            text("Slot",tostring(move.slot or index),x+math.max(1,2*textScale),y+math.max(1,2*textScale),slotSize,false)
-            local lines={}
-            local current=""
-            local maxChars=math.max(3,math.floor((w-math.max(2,4*textScale))/(nameSize*.5)))
-            local name=tostring(move.name or "Unknown")
+        local stateSize=math.max(2,math.floor(8*textScale+.5))
+        local slotSize=math.max(2,math.floor(10*textScale+.5))
+        local padding=math.max(1,2*textScale)
+        text("Slot",tostring(move.slot or index),x+padding,y+padding,slotSize,false)
+        local name=tostring(move.name or "Unknown")
+        local width=math.max(1,w-padding*2)
+        local top=y+padding+slotSize
+        local bottom=y+h-padding-(not ready and stateSize+1 or 0)
+        local available=math.max(1,bottom-top)
+        local longest=1
+        for word in name:gmatch("%S+") do longest=math.max(longest,#word) end
+        -- Fit complete words first, then wrap all lines. Never abbreviate names.
+        local nameSize=math.max(1,math.floor(math.min(14*textScale,width/(longest*.65))))
+        local function wrap(size)
+            local maxChars=math.max(1,math.floor(width/(size*.65)))
+            local lines,current={},""
             for token in name:gmatch("%S+") do
                 local word=token
                 while #word>maxChars do
@@ -2823,16 +2854,21 @@ local function mountPlayerESP()
             end
             if current~="" then lines[#lines+1]=current end
             if #lines==0 then lines={"Unknown"} end
-            local maxLines=layout.lines
-            if #lines>maxLines then lines[maxLines]=lines[maxLines]:sub(1,math.max(1,maxChars-2))..".." end
-            local count=math.min(maxLines,#lines)
-            local nameY=y+(h-count*(nameSize+1))/2
-            for row=1,count do text("Name"..row,lines[row],x+w/2,nameY+(row-1)*(nameSize+1),nameSize,true) end
+            return lines
+        end
+        local lines=wrap(nameSize)
+        while nameSize>1 and #lines*(nameSize+1)>available do
+            nameSize=nameSize-1;lines=wrap(nameSize)
+        end
+        local lineHeight=math.min(nameSize+1,available/math.max(1,#lines))
+        local nameY=top+math.max(0,(available-#lines*lineHeight)/2)
+        for row,line in ipairs(lines) do
+            text("Name"..row,line,x+w/2,nameY+(row-1)*lineHeight,nameSize,true)
         end
         local seconds=number(move.cooldownSeconds) and move.cooldownSeconds or nil
         local state=not known and "UNKNOWN" or ready and "READY"
             or (seconds and (math.max(1,math.ceil(seconds-.000001)).."s") or "...")
-        local stateY=layout.compact and y+(h-stateSize)/2 or y+h-stateSize-2
+        local stateY=y+h-stateSize-padding
         if not ready then text("State",state,x+w/2,stateY,stateSize,true) end
     end
     local function updatePlayer(player,record,now,frame)
@@ -2854,15 +2890,6 @@ local function mountPlayerESP()
             return (head.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
         end)
         if okDistance and number(distance) and distance>range.Value then hide(record);return end
-        local rootPosition=root.Position
-        if not frame or frame.camera~=camera then frame=screenProjection(camera) end
-        local point,visible,depth=projectAnchor(record,rootPosition,camera,frame,now)
-        if not point or (depth and depth<=0) then hide(record);return end
-        local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition,point,frame,now)
-        local view=camera.ViewportSize
-        local inside=point.X>=0 and point.Y>=0 and point.X<=view.X and point.Y<=view.Y
-        if not left or right<0 or left>view.X or top+bodyHeight<0 or top>view.Y
-            or (visible==false and inside) then hide(record);return end
         if now>=record.nextRead then
             if modeOn.Value then
                 local success,value=pcall(readMode,player,character)
@@ -2880,6 +2907,18 @@ local function mountPlayerESP()
             end
             record.nextRead=now+.05
         end
+        refreshBodyBounds(record,character,root,now)
+        -- Capture after state reads; never use a shared camera snapshot aged by
+        -- processing another player's cooldowns, tags, dimensions or drawings.
+        frame=screenProjection(camera)
+        local rootPosition=freshRootPosition(root)
+        local point,visible,depth=projectAnchor(record,rootPosition,camera,frame,now)
+        if not point or (depth and depth<=0) then hide(record);return end
+        local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition,point,frame,now)
+        local view=frame and {X=frame.width,Y=frame.height} or camera.ViewportSize
+        local inside=point.X>=0 and point.Y>=0 and point.X<=view.X and point.Y<=view.Y
+        if not left or right<0 or left>view.X or top+bodyHeight<0 or top>view.Y
+            or (visible==false and inside) then hide(record);return end
         record.used={}
         if modeOn.Value then
             local ratio=record.mode
@@ -2923,7 +2962,7 @@ local function mountPlayerESP()
         if stopped or not alive then return end
         local now=tick and tick() or os.clock()
         local present={}
-        local frame=screenProjection(world.CurrentCamera)
+        local frame
         local ok,list=pcall(function() return Players:GetPlayers() end)
         if not ok then for _,record in pairs(records) do hide(record) end;return end
         for _,player in ipairs(list) do
