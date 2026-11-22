@@ -2349,8 +2349,8 @@ local function mountPlayerESP()
         return projectToScreen(position,camera,frame)
     end
     local function projectAnchor(record,position,camera,frame,now)
-        -- Multiple reads of the SAME world point reject a torn/native projection
-        -- sample without averaging previous screen positions or adding a trail.
+        -- Reject isolated native projection samples before smoothing the shared
+        -- anchor continuously; every ESP element follows the same result.
         local samples,xs,ys={},{},{}
         for i=1,3 do
             local point,visible,depth=project(position,camera,frame)
@@ -2372,13 +2372,39 @@ local function mountPlayerESP()
             local error=math.abs(sample.x-x)+math.abs(sample.y-y)
             if not best or error<best then selected=sample;best=error end
         end
-        local previous=record.anchorPixel
-        if previous and previous.camera==camera and now>=previous.time and now-previous.time<.25 then
-            if math.abs(x-previous.x)<.65 then x=previous.x end
-            if math.abs(y-previous.y)<.65 then y=previous.y end
+        local previous=record.anchorSmooth
+        local reset=not previous or previous.camera~=camera or now<previous.time or now-previous.time>.25
+        if previous and not reset then
+            pcall(function() if (position-previous.worldPosition).Magnitude>12 then reset=true end end)
+            if frame and frame.position and previous.cameraPosition then
+                pcall(function() if (frame.position-previous.cameraPosition).Magnitude>12 then reset=true end end)
+            end
         end
-        x=math.floor(x+.5);y=math.floor(y+.5)
-        record.anchorPixel={x=x,y=y,camera=camera,time=now}
+        if reset then
+            previous={x=x,y=y,rawX=x,rawY=y,vx=0,vy=0,time=now,camera=camera}
+            record.anchorSmooth=previous
+        elseif now>previous.time then
+            local dt=math.min(.1,math.max(.0001,now-previous.time))
+            local function alpha(cutoff)
+                return 1/(1+1/(2*math.pi*cutoff*dt))
+            end
+            -- One Euro filtering: strong damping for small jitter, a faster
+            -- response during real motion. Both axes use the same blend factor.
+            local derivativeAlpha=alpha(7)
+            local vx=(x-previous.rawX)/dt
+            local vy=(y-previous.rawY)/dt
+            previous.vx=previous.vx+(vx-previous.vx)*derivativeAlpha
+            previous.vy=previous.vy+(vy-previous.vy)*derivativeAlpha
+            local speed=math.sqrt(previous.vx*previous.vx+previous.vy*previous.vy)
+            local cutoff=math.min(45,3+.04*speed)
+            local blend=alpha(cutoff)
+            previous.x=previous.x+(x-previous.x)*blend
+            previous.y=previous.y+(y-previous.y)*blend
+            previous.rawX=x;previous.rawY=y
+        end
+        previous.time=now;previous.worldPosition=position
+        previous.cameraPosition=frame and frame.position or nil
+        x,y=previous.x,previous.y
         return Vector2.new(x,y),selected.visible,selected.depth
     end
     local function object(record,key,kind)
@@ -2460,7 +2486,7 @@ local function mountPlayerESP()
             if top and bottom then scale=math.abs(bottom.Y-top.Y)/(upper+lower) end
             if not number(scale) or scale<.1 then scale=record.lastScale or 12 end
         end
-        -- Filter SIZE only. The screen anchor remains the current root point.
+        -- Smooth size independently; placement uses the shared adaptive anchor.
         now=now or (tick and tick() or os.clock())
         local filter=record.scaleFilter
         local reset=not filter or filter.camera~=camera or now<filter.time or now-filter.time>.25
@@ -2485,8 +2511,8 @@ local function mountPlayerESP()
         local target=count%2==0 and (values[count/2]+values[count/2+1])/2 or values[(count+1)/2]
         local dt=math.max(0,math.min(.1,now-filter.time))
         local difference=math.log(target/filter.value)
-        if math.abs(difference)>.02 then
-            local change=difference*(1-math.exp(-28*dt))
+        if math.abs(difference)>.000001 then
+            local change=difference*(1-math.exp(-18*dt))
             local maximum=2.5*dt
             filter.value=filter.value*math.exp(math.max(-maximum,math.min(maximum,change)))
         end
@@ -2498,10 +2524,8 @@ local function mountPlayerESP()
         local height=(upper+lower)*scale
         if height<3 then height=3;scale=height/(upper+lower) end
         if not number(height) or height<=0 then return nil end
-        local left=math.floor(point.X-halfWidth*scale+.5)
-        local right=math.floor(point.X+halfWidth*scale+.5)
-        local top=math.floor(point.Y-upper*scale+.5)
-        return left,right,top,math.max(3,math.floor(height+.5))
+        return point.X-halfWidth*scale,point.X+halfWidth*scale,
+            point.Y-upper*scale,math.max(3,height)
     end
     local function verticalMeter(record,key,ratio,x,top,height,color)
         -- Keep a small percentage just outside each vertical mode line.
@@ -2510,7 +2534,7 @@ local function mountPlayerESP()
         local uiScale=math.min(1,math.max(.3,height/160))
         set(percent,"Size",math.max(6,math.floor(12*uiScale+.5)))
         set(percent,"Center",true)
-        local percentGap=math.floor(math.max(7,22*uiScale)+.5)
+        local percentGap=math.max(7,22*uiScale)
         local percentX=key=="mode2" and x+percentGap or x-percentGap
         local lineWidth=math.max(1,2*uiScale)
         local borderWidth=math.max(.5,uiScale)
@@ -2606,7 +2630,7 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.anchorPixel=nil;record.lastScale=nil;record.scaleFilter=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
+            hide(record);record.character=identity;record.bounds=nil;record.anchorSmooth=nil;record.lastScale=nil;record.scaleFilter=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -2656,9 +2680,9 @@ local function mountPlayerESP()
         end
         if movesOn.Value then
             local count=math.max(1,#record.moves)
-            local cardSize=math.floor(math.max(8,math.min(64,bodyHeight*.38))+.5)
+            local cardSize=math.max(8,math.min(64,bodyHeight*.38))
             local cardScale=cardSize/64
-            local gap,pad=math.max(1,math.floor(4*cardScale+.5)),4
+            local gap,pad=math.max(1,4*cardScale),4
             local boxWidth=math.min(cardSize,math.max(1,view.X-pad*2))
             local boxHeight=math.min(cardSize,math.max(1,view.Y-pad*2))
             local rows=math.min(count,math.max(1,math.floor((view.Y-pad*2+gap)/(boxHeight+gap))))
@@ -2667,7 +2691,7 @@ local function mountPlayerESP()
             boxWidth=math.min(boxWidth,math.max(1,(view.X-pad*2-(columns-1)*columnGap)/columns))
             local stackWidth=columns*boxWidth+(columns-1)*columnGap
             local stackHeight=rows*boxHeight+(rows-1)*gap
-            local sideGap=math.floor(math.max(10,46*cardScale)+.5)
+            local sideGap=math.max(10,46*cardScale)
             local rightX=right+sideGap
             local leftX=left-sideGap-stackWidth
             local rightFits=rightX+stackWidth<=view.X-pad
@@ -2677,9 +2701,9 @@ local function mountPlayerESP()
             elseif side=="left" and not leftFits and rightFits then side="right" end
             record.boxSide=side
             local boxX=side=="left" and leftX or rightX
-            boxX=math.floor(math.max(pad,math.min(boxX,view.X-pad-stackWidth))+.5)
+            boxX=math.max(pad,math.min(boxX,view.X-pad-stackWidth))
             local boxY=top+(bodyHeight-stackHeight)/2
-            boxY=math.floor(math.max(pad,math.min(boxY,view.Y-pad-stackHeight))+.5)
+            boxY=math.max(pad,math.min(boxY,view.Y-pad-stackHeight))
             if #record.moves==0 then
                 moveBox(record,1,{name="Moves",source="unknown"},boxX,boxY,boxWidth,boxHeight,now)
             else
