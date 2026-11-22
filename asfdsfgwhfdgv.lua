@@ -3858,7 +3858,7 @@ local function mountPlayerESP()
                 local hpSize=math.max(8,math.floor(12*scale+.5))
                 set(hpText,"Size",hpSize);set(hpText,"Center",true);set(hpText,"ZIndex",904)
                 label(row,"HealthText",string.format("%d / %d",math.ceil(data.health),math.ceil(data.maxHealth)),
-                    x+width/2,y+23*scale+(15*scale-hpSize)/2,white)
+                    x+width/2,y+(23+15/2)*scale,white)
             end
             sidebarMeter(row,"Mode",data.mode,x+4*scale,y+44*scale,width-8*scale,12*scale,10,sidebarModeRed,scale)
             if data.mode2~=nil and data.showMode2 then
