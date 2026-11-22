@@ -1931,7 +1931,151 @@ local function mountPlayerESP()
         end
         return nil
     end
+    -- Read replicated value instances directly. This path does not depend on
+    -- Matcha returning the right wrapper class, Value, or FindFirstChild result.
+    local rawMeterSources={}
+    local function rawMeterMode(player,character,secondary)
+        if type(memory_read)~="function" then return nil end
+        local ok,ratio,source=pcall(function()
+            local function pointer(value)
+                return number(value) and value>=4096 and value<140737488355328
+            end
+            local function stringAt(address)
+                if not pointer(address) then return nil end
+                local length=memory_read("uintptr_t",address+0x10)
+                local capacity=memory_read("uintptr_t",address+0x18)
+                if not number(length) or not number(capacity) or length<1 or length>128
+                    or capacity<length or capacity>4096 then return nil end
+                local data=capacity>=16 and memory_read("uintptr_t",address) or address
+                if not pointer(data) then return nil end
+                local value=memory_read("string",data)
+                if type(value)=="string" and #value==length then return value end
+            end
+            local function nameOf(address)
+                return stringAt(memory_read("uintptr_t",address+0x68))
+            end
+            local function classOf(address)
+                local descriptor=memory_read("uintptr_t",address+0x18)
+                if pointer(descriptor) then return stringAt(memory_read("uintptr_t",descriptor+8)) end
+            end
+            local function children(address)
+                local out={}
+                if not pointer(address) then return out end
+                local vector=memory_read("uintptr_t",address+0x70)
+                if not pointer(vector) then return out end
+                local first=memory_read("uintptr_t",vector)
+                local last=memory_read("uintptr_t",vector+8)
+                if not pointer(first) or not number(last) or last<first
+                    or last-first>16*512 or (last-first)%16~=0 then return out end
+                for entry=first,last-1,16 do
+                    local object=memory_read("uintptr_t",entry)
+                    if pointer(object) then
+                        local name=nameOf(object)
+                        if name then out[name]=object end
+                    end
+                end
+                return out
+            end
+            local function scalar(address)
+                if not pointer(address) then return nil end
+                local class=classOf(address)
+                if class=="NumberValue" then return memory_read("double",address+0xA0) end
+                if class=="IntValue" then
+                    local low=memory_read("int",address+0xA0)
+                    local high=memory_read("int",address+0xA4)
+                    if high==0 then return low<0 and low+4294967296 or low end
+                end
+            end
+            local playerAddress=player.Address
+            local characterAddress=character and character.Address
+            local identity=tostring(playerAddress)
+            local cache=rawMeterSources[identity]
+            if not cache or cache.character~=characterAddress then
+                cache={character=characterAddress};rawMeterSources[identity]=cache
+            end
+            local cacheKey=secondary and "secondary" or "primary"
+            local cached=cache[cacheKey]
+            if cached and pointer(cached.address) and pointer(cached.parent)
+                and memory_read("uintptr_t",cached.address+0x60)==cached.parent
+                and nameOf(cached.address)==cached.name and classOf(cached.address)==cached.class then
+                local kind=cached.class=="IntConstrainedValue" and "int" or "double"
+                local maximum=memory_read(kind,cached.address+0xA0)
+                local minimum=memory_read(kind,cached.address+0xA8)
+                local current=memory_read(kind,cached.address+0xB0)
+                if number(current) and number(minimum) and number(maximum)
+                    and maximum>minimum and math.abs(minimum)<=1000000 and maximum<=1000000
+                    and math.abs(current)<=1000000 then
+                    return math.max(0,math.min(1,(current-minimum)/(maximum-minimum))),cached.name
+                end
+            end
+            cache[cacheKey]=nil
+            local containers={}
+            local function add(address)
+                if pointer(address) then containers[#containers+1]=children(address) end
+            end
+            add(playerAddress);add(characterAddress)
+            local playerChildren=containers[1] or {}
+            local characterChildren=pointer(characterAddress) and children(characterAddress) or {}
+            add(playerChildren.Stats);add(playerChildren.PlayerData)
+            add(playerChildren.ReplicatedStats);add(characterChildren.Stats)
+            local names=secondary and {"GatesBar","BloodBar","RoomBar","KaidoBar","AstaBar","TimeStopBar","RagnaBar","SungJinWooBar","IndraArrowBar","SecondBar","Charge2","SecondCharge","SecondaryCharge","SecondModeCharge","SecondModeBar","SecondaryBar","ModeBar2","Mode2","SecondMode","Awakening2","Ultimate2"}
+                or {"Charge","ModeCharge","AwakeningCharge","UltimateCharge"}
+            local function read(address,siblings,name)
+                local class=classOf(address)
+                local current,minimum,maximum
+                if class=="DoubleConstrainedValue" or class=="IntConstrainedValue" then
+                    local kind=class=="IntConstrainedValue" and "int" or "double"
+                    maximum=memory_read(kind,address+0xA0)
+                    minimum=memory_read(kind,address+0xA8)
+                    current=memory_read(kind,address+0xB0)
+                    cache[cacheKey]={address=address,parent=memory_read("uintptr_t",address+0x60),name=name,class=class}
+                elseif class=="NumberValue" or class=="IntValue" then
+                    current=scalar(address)
+                    local fields=children(address)
+                    minimum=scalar(fields.MinValue) or scalar(fields.Min) or 0
+                    maximum=scalar(fields.MaxValue) or scalar(fields.Max) or scalar(fields.Capacity)
+                        or scalar(siblings["Max"..name]) or scalar(siblings[name.."Max"])
+                        or scalar(siblings[secondary and "MaxCharge2" or "MaxCharge"])
+                end
+                if number(current) and number(minimum) and number(maximum)
+                    and maximum>minimum and math.abs(minimum)<=1000000 and maximum<=1000000
+                    and math.abs(current)<=1000000 then
+                    return math.max(0,math.min(1,(current-minimum)/(maximum-minimum)))
+                end
+            end
+            for _,siblings in ipairs(containers) do
+                local checked={}
+                for _,name in ipairs(names) do
+                    local address=siblings[name]
+                    if address then
+                        checked[name]=true
+                        local value=read(address,siblings,name)
+                        if value~=nil then return value,name end
+                    end
+                end
+                if secondary then
+                    for name,address in pairs(siblings) do
+                        local low=name:lower()
+                        local secondaryName=low:find("second",1,true) or low:match("2$")
+                        local meterName=low:find("bar",1,true) or low:find("charge",1,true)
+                            or low:find("mode",1,true) or low:find("awak",1,true)
+                        -- Character-specific resource bars are constrained meters;
+                        -- discover them without requiring another roster whitelist.
+                        local resource=low:match("bar$") and name~="BlockBar" and name~="HealthBar"
+                        if not checked[name] and ((secondaryName and meterName) or resource) then
+                            local value=read(address,siblings,name)
+                            if value~=nil then return value,name end
+                        end
+                    end
+                end
+            end
+        end)
+        if ok and number(ratio) then return ratio,source end
+        return nil
+    end
     local function readMode(player,character,secondary)
+        local direct,source=rawMeterMode(player,character,secondary)
+        if direct~=nil then return direct,source end
         -- ABA stores awakening charge on the Player as a constrained value.
         -- Read its actual maximum; do not assume that 100 or 1 means full.
         local names=secondary and {"GatesBar","BloodBar","RoomBar","KaidoBar","AstaBar","TimeStopBar","RagnaBar","SungJinWooBar","IndraArrowBar","SecondBar","Charge2","SecondCharge","SecondaryCharge","SecondModeCharge","SecondModeBar","SecondaryBar","ModeBar2","Mode2","SecondMode","Awakening2","Ultimate2"} or {"Charge"}
@@ -2958,9 +3102,9 @@ local function mountPlayerESP()
                 local success,value=pcall(readMode,player,character)
                 if success and number(value) then
                     record.mode=value;record.lastModeRead=now
-                elseif not record.lastModeRead or now-record.lastModeRead>.25 then
-                    record.mode=nil
                 end
+                -- A transient wrapper/discovery failure must not erase a valid
+                -- reading. Character changes already clear this cached value.
                 local secondOk,secondValue,secondSource=pcall(readMode,player,character,true)
                 if secondOk then
                     record.mode2=secondValue
