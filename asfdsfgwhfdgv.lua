@@ -1340,7 +1340,7 @@ local function mountBlockWatcher()
         if ok then return decode(value) end
         return nil
     end
-    local function moveReady(player,character,slot)
+    local function resolveMoveSkill(player,character,slot)
         -- SlotN children are absent on some live character kits. They cannot
         -- be a prerequisite for pressing a user-selected key.
         local hudName
@@ -1354,13 +1354,6 @@ local function mountBlockWatcher()
                 hudName=label.Text:gsub("<.->","")
             end
         end)
-        local function readiness(skill)
-            local ok,value=pcall(function() return skill:GetAttribute("COOLDOWN") end)
-            if ok and type(value)=="number" and value==value and value>=0 and value<=20 then
-                return value>=19.999
-            end
-            return nil
-        end
         local function matchesHUD(skill,config)
             if not hudName then return false end
             if tostring(skill.Name)==hudName then return true end
@@ -1381,7 +1374,7 @@ local function mountBlockWatcher()
                 for _,skill in ipairs(container:GetChildren()) do
                     local config=skill:FindFirstChild(".Config")
                     if config then
-                        if matchesHUD(skill,config) then return readiness(skill) end
+                        if matchesHUD(skill,config) then return skill end
                         if config:FindFirstChild("Slot"..tostring(slot)) then slotMatch=skill end
                         local value=config:FindFirstChild("Slot")
                         local ok,index=pcall(function() return value and value.Value end)
@@ -1390,7 +1383,7 @@ local function mountBlockWatcher()
                 end
             end
         end
-        if slotMatch then return readiness(slotMatch) end
+        if slotMatch then return slotMatch end
         -- Unknown readiness is not the same as an active cooldown. Let Roblox
         -- handle the chosen key instead of silently blocking unsupported kits.
         return nil
@@ -1452,6 +1445,13 @@ local function mountBlockWatcher()
         end
         if blocking then
             previousBlocking=true;openingAt=nil;fired=false
+            -- Resolve HUD names and skill metadata while the target is blocking,
+            -- never in the time-sensitive unblock-to-keypress path.
+            if now>=(context.nextSkillRead or 0) then
+                context.nextSkillRead=now+.1
+                local ok,skill=pcall(resolveMoveSkill,me,ownCharacter,slot)
+                context.skill=ok and skill or nil
+            end
             message("Armed · waiting for target to unblock");return
         end
         if previousBlocking==true then openingAt=now end
@@ -1470,9 +1470,12 @@ local function mountBlockWatcher()
         if not menuOK or menuOpen or not macroInputAllowed(true) then message("Paused: menu, focus, chat or whitelist");return end
         if macroBusy then message("Paused during macro");return end
         if type(keypress)~="function" or type(keyrelease)~="function" then message("Keyboard APIs unavailable");return end
-        local readyOK,ready=pcall(moveReady,me,ownCharacter,slot)
-        if not readyOK then message("Retrying selected move data");return end
-        if ready==false then message("Waiting for selected move cooldown");return end
+        if context.skill then
+            local ok,value=pcall(function() return context.skill:GetAttribute("COOLDOWN") end)
+            if ok and type(value)=="number" and value==value and value>=0 and value<19.999 then
+                message("Waiting for selected move cooldown");return
+            end
+        end
         -- Recheck at dispatch: do not send a late key after a slow lookup or
         -- after the target has already raised their guard again.
         local dispatchTime=tick and tick() or os.clock()
@@ -1505,11 +1508,11 @@ local function mountBlockWatcher()
     local heartbeat
     if task and type(task.spawn)=="function" and type(task.wait)=="function" then
         -- Separate the time-sensitive state read from the emulated Heartbeat
-        -- cadence. This is a 2ms polling target, not a promised engine tick rate.
+        -- cadence. The 1ms target still depends on Matcha scheduling.
         task.spawn(function()
             while alive and not stopped do
                 poll()
-                task.wait(enabled.Value and .002 or .05)
+                task.wait(enabled.Value and .001 or .05)
             end
             releaseMoveKey()
         end)
