@@ -2180,14 +2180,28 @@ local function mountPlayerESP()
         local value=move.cd
         local known=number(value)
         local ready=known and value>=20
-        local tint=not known and Color3.fromRGB(80,85,98)
-            or ready and Color3.fromRGB(0,105,235) or Color3.fromRGB(215,35,45)
-        square(record,key.."Border",x-1,y-1,w+2,h+2,Color3.fromRGB(15,15,18))
+        local tint=Color3.fromRGB(225,38,40)
+        square(record,key.."Border",x-1,y-1,w+2,h+2,Color3.fromRGB(75,32,35))
         square(record,key.."Body",x,y,w,h,tint)
-        set(record.drawings[key.."Body"],"ZIndex",901)
+        set(record.drawings[key.."Body"],"ZIndex",900)
+        -- Red button gradient, matching the game's move slots.
+        for band=1,8 do
+            local shade=1-(band-1)*.075
+            local bandY=y+h*(band-1)/8
+            square(record,key.."Shade"..band,x,bandY,w,h/8+.5,
+                Color3.fromRGB(math.floor(225*shade),math.floor(38*shade),math.floor(40*shade)))
+            set(record.drawings[key.."Shade"..band],"ZIndex",901)
+        end
+        -- cd is readiness on a 0..20 scale: 0 = just used, 20 = ready.
+        -- Keep the bottom edge fixed so the gray area drains downward.
+        local remaining=known and (1-math.max(0,math.min(20,value))/20) or 0
+        local overlayHeight=h*remaining
+        square(record,key.."Cooldown",x,y+h-overlayHeight,w,overlayHeight,Color3.fromRGB(100,103,110))
+        set(record.drawings[key.."Cooldown"],"ZIndex",902)
+        set(record.drawings[key.."Cooldown"],"Transparency",.75)
         local function text(suffix,text,tx,ty,size,center)
             local d=object(record,key..suffix,"Text")
-            set(d,"Size",size);set(d,"Center",center)
+            set(d,"Size",size);set(d,"Center",center);set(d,"ZIndex",903)
             label(record,key..suffix,text,tx,ty,white)
         end
         text("Slot",tostring(move.slot or index),x+4,y+2,11,false)
@@ -2196,25 +2210,25 @@ local function mountPlayerESP()
         local name=tostring(move.name or "Unknown")
         for token in name:gmatch("%S+") do
             local word=token
-            while #word>13 do
+            while #word>10 do
                 if current~="" then lines[#lines+1]=current;current="" end
-                lines[#lines+1]=word:sub(1,13);word=word:sub(14)
+                lines[#lines+1]=word:sub(1,10);word=word:sub(11)
             end
-            if #current+#word+1>13 and current~="" then
+            if #current+#word+1>10 and current~="" then
                 lines[#lines+1]=current;current=word
             else current=current=="" and word or current.." "..word end
         end
         if current~="" then lines[#lines+1]=current end
         if #lines==0 then lines={"Unknown"} end
-        if #lines>2 then lines[2]=lines[2]:sub(1,10).."..." end
+        if #lines>2 then lines[2]=lines[2]:sub(1,7).."..." end
         local count=math.min(2,#lines)
-        local nameY=y+12+math.max(0,(h-29-count*12)/2)
-        for row=1,count do text("Name"..row,lines[row],x+w/2,nameY+(row-1)*12,12,true) end
+        local nameY=y+12+math.max(0,(h-27-count*11)/2)
+        for row=1,count do text("Name"..row,lines[row],x+w/2,nameY+(row-1)*11,10,true) end
         local state=not known and "UNKNOWN" or ready and "READY"
             or (math.floor(math.max(0,math.min(20,value))*5+.5).."%")
         if move.source=="estimated" then state=state.." EST"
         elseif move.source=="last observed" then state=state.." LAST" end
-        text("State",state,x+w/2,y+h-13,10,true)
+        text("State",state,x+w/2,y+h-12,9,true)
     end
     local function updatePlayer(player,record,now)
         local character=player.Character
@@ -2274,11 +2288,11 @@ local function mountPlayerESP()
         end
         if movesOn.Value then
             local count=math.max(1,#record.moves)
-            local boxWidth,gap=88,4
+            local boxWidth,gap=64,4
             local anchorRight=right or point.X+30
             local anchorTop=top or point.Y
             local anchorHeight=bodyHeight or 180
-            local boxHeight=math.max(54,math.min(68,(anchorHeight-(count-1)*gap)/count))
+            local boxHeight=64
             local boxX=anchorRight+46
             if boxX+boxWidth>camera.ViewportSize.X-4 then boxX=(left or point.X-30)-46-boxWidth end
             local boxY=anchorTop+(anchorHeight-(count*boxHeight+(count-1)*gap))/2
