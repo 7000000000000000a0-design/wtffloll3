@@ -365,6 +365,7 @@ local connection, lastStatus, lastError
 local destroyHeadRide
 local destroyMahoragaCounter
 local destroyPlayerESP
+local destroyPlayersTab
 
 local function message(text)
     if text ~= lastStatus then lastStatus=text;  end
@@ -379,6 +380,7 @@ state = {}
 function state.Destroy()
     if not alive then return end
     alive=false; enabled=false
+    if destroyPlayersTab then pcall(destroyPlayersTab) end
     if destroyPlayerESP then pcall(destroyPlayerESP) end
     if destroyMahoragaCounter then pcall(destroyMahoragaCounter) end
     if destroyHeadRide then pcall(destroyHeadRide) end
@@ -399,6 +401,125 @@ _G.NanamiTimingMatcha=state
 
 local players=game:GetService("Players")
 local world=game:GetService("Workspace")
+-- Shared whitelist: stable account IDs, plus a username fallback for runtimes
+-- which do not expose UserId. All player-aware features consult this service.
+local playerWhitelist=type(_G.ABAPlayerWhitelist)=="table" and _G.ABAPlayerWhitelist or {}
+_G.ABAPlayerWhitelist=playerWhitelist
+local rosterPlayers={}
+local function whitelistIdentity(player)
+    if not player then return nil end
+    local ok,name=pcall(function() return tostring(player.Name) end)
+    if not ok then return nil end
+    local idOK,id=pcall(function() return player.UserId end)
+    if idOK and type(id)=="number" and id>0 then return "id:"..tostring(id),name end
+    return "name:"..name:lower(),name
+end
+local function isPlayerWhitelisted(player)
+    local identity,name=whitelistIdentity(player)
+    return identity~=nil and (playerWhitelist[identity]==true
+        or playerWhitelist["name:"..name:lower()]==true)
+end
+local function setPlayerWhitelist(identity,name,on)
+    playerWhitelist[identity]=on and true or nil
+    playerWhitelist["name:"..name:lower()]=on and true or nil
+end
+local function playerOwner(object)
+    if not object then return nil end
+    local current=object
+    for depth=1,8 do
+        local ok,address=pcall(function() return current.Address end)
+        for _,player in ipairs(rosterPlayers) do
+            if current==player then return player end
+            local match,found=pcall(function()
+                local character=player.Character
+                return character and (current==character or (ok and address and address>0 and character.Address==address))
+            end)
+            if match and found then return player end
+        end
+        local parentOK,parent=pcall(function() return current.Parent end)
+        if not parentOK or not parent or parent==current then break end
+        current=parent
+    end
+    return nil
+end
+local function isWhitelistedObject(object)
+    local owner=playerOwner(object)
+    return owner and isPlayerWhitelisted(owner) or false
+end
+local function whitelistBlocksInput()
+    if next(playerWhitelist)==nil then return false end
+    -- Only block inputs when an exposed target belongs to a protected player.
+    -- This does not attempt to intercept manual actions or game damage.
+    local targetGetters={get_aimbot_target,get_silent_aim_target,get_triggerbot_target}
+    for i=1,3 do
+        local getter=targetGetters[i]
+        if type(getter)=="function" then
+            local ok,target=pcall(getter)
+            if ok and target and isWhitelistedObject(target) then return true end
+        end
+    end
+    local ok,target=pcall(function() return players.LocalPlayer:GetMouse().Target end)
+    return ok and target and isWhitelistedObject(target) or false
+end
+local function mountPlayersTab()
+    local page=window:Tab("Players")
+    page:Paragraph({Name="Whitelist",Content="Turn on a player to exclude them from targeting, ESP and player counters."})
+    local status=page:Paragraph({Name="Server players",Content="Loading players..."})
+    local rows={}
+    local stopped=false
+    local function refreshRoster()
+        local ok,list=pcall(function() return players:GetPlayers() end)
+        if not ok or type(list)~="table" then return end
+        rosterPlayers=list
+        table.sort(list,function(a,b) return tostring(a.Name):lower()<tostring(b.Name):lower() end)
+        local visibleRows={}
+        for _,player in ipairs(list) do
+            local identity,name=whitelistIdentity(player)
+            if identity then
+                local row=rows[identity]
+                local display=name
+                pcall(function()
+                    if player.DisplayName and player.DisplayName~=name then display=tostring(player.DisplayName).." (@"..name..")" end
+                end)
+                if player==players.LocalPlayer then display=display.." (you)" end
+                if not row then
+                    local flag="player_whitelist_"..identity:gsub("[^%w_]","_")
+                    row=page:Toggle({Name=display,Flag=flag,Default=isPlayerWhitelisted(player),
+                        Callback=function(on) setPlayerWhitelist(identity,name,on==true) end})
+                    row.whitelistRosterRow=true
+                    rows[identity]=row
+                    setPlayerWhitelist(identity,name,row.Value==true)
+                end
+                row.Name=display
+                visibleRows[#visibleRows+1]=row
+            end
+        end
+        -- Reuse controls and their saved flags. Remove departed rows from the
+        -- visible page without creating duplicates when accounts respawn/rejoin.
+        for i=#page.elements,1,-1 do
+            if page.elements[i].whitelistRosterRow then table.remove(page.elements,i) end
+        end
+        for _,row in ipairs(visibleRows) do page.elements[#page.elements+1]=row end
+        local count=0
+        for _,player in ipairs(list) do if isPlayerWhitelisted(player) then count=count+1 end end
+        status:Set(string.format("%d players · %d whitelisted",#list,count))
+    end
+    pcall(refreshRoster)
+    local elapsed=0
+    local refreshConnection=game:GetService("RunService").Heartbeat:Connect(function(dt)
+        if stopped or not alive then return end
+        elapsed=elapsed+(tonumber(dt) or .016)
+        if elapsed<.75 then return end
+        elapsed=0;pcall(refreshRoster)
+    end)
+    return function()
+        stopped=true
+        if refreshConnection then pcall(function() refreshConnection:Disconnect() end) end
+        rosterPlayers={}
+    end
+end
+destroyPlayersTab=mountPlayersTab()
+
 local armedUntil=0
 local lastKeys={}
 local positionOffset,guiSizeOffset,visualEngineOffset,viewMatrixOffset,renderDimensionsOffset,partPrimitiveOffset,primitivePositionOffset
@@ -590,7 +711,7 @@ local function localX(obj)
     end
 end
 local function updateOtherTimings()
-    if not alive then return end
+    if not alive or whitelistBlocksInput() then return end
     local now=tick and tick() or os.clock()
     if cameraTimingsOn then
         local cam=world.CurrentCamera
@@ -640,6 +761,7 @@ local function updateOtherTimings()
 end
 local function child(parent,name) return parent and parent:FindFirstChild(name) end
 local function barsIn(model, results)
+    if isWhitelistedObject(model) then return end
     local root=child(model,"HumanoidRootPart")
     if not root then return end
     for _,gui in ipairs(root:GetChildren()) do
@@ -662,7 +784,7 @@ local function locate(character)
     return results
 end
 local function update()
-    if not enabled or not alive then return end
+    if not enabled or not alive or whitelistBlocksInput() then return end
     if type(mouse1click) ~= "function" then message("This runner has no mouse1click API."); return end
     local player=players.LocalPlayer
     local character=player and player.Character
@@ -750,6 +872,7 @@ local function robloxTextFocused()
 end
 
 local function macroInputAllowed()
+    if whitelistBlocksInput() then return false end
     if not robloxFocused() then return false end
     local focused = robloxTextFocused()
     if focused ~= nil then return not focused end
@@ -1328,7 +1451,7 @@ local function mountHeadRide()
         while alive do
             local list = {}
             for _, plr in ipairs(safe(function() return Players:GetPlayers() end, {}) or {}) do
-                if plr ~= LocalPlayer then
+                if plr ~= LocalPlayer and not isPlayerWhitelisted(plr) then
                     list[#list + 1] = plr
                 end
             end
@@ -1362,7 +1485,7 @@ local function mountHeadRide()
         local best, bestScore = nil, nil
 
         for _, plr in ipairs(targets) do
-            if isAlive(plr) and not (teamCheck and sameTeam(plr)) then
+            if not isPlayerWhitelisted(plr) and isAlive(plr) and not (teamCheck and sameTeam(plr)) then
                 local root = rootOf(charOf(plr))
                 local pos  = root and safe(function() return root.Position end, nil)
                 if pos then
@@ -1386,7 +1509,7 @@ local function mountHeadRide()
     end
 
     local function targetValid(plr)
-        if not plr then return false end
+        if not plr or isPlayerWhitelisted(plr) then return false end
         if not isAlive(plr) or (gv("ride_team", false) and sameTeam(plr)) then return false end
         local origin = myPos()
         local root   = rootOf(charOf(plr))
@@ -1621,7 +1744,7 @@ local function mountHeadRide()
         if not alive then return end
         local showMarker = gv("ride_marker", true)
         local showTracer = gv("ride_tracer", false)
-        if not currentTarget or not rideEnabled() or not (showMarker or showTracer) then
+        if not currentTarget or isPlayerWhitelisted(currentTarget) or not rideEnabled() or not (showMarker or showTracer) then
             hideDrawings()
             return
         end
@@ -3149,6 +3272,7 @@ local function mountPlayerESP()
         if not ready then text("State",state,x+w/2,stateY,stateSize,true) end
     end
     local function preparePlayer(player,record,now)
+        if isPlayerWhitelisted(player) then hide(record);return end
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
@@ -3268,7 +3392,7 @@ local function mountPlayerESP()
                 for _,player in ipairs(list) do
                     if stopped or not alive then return end
                     local identity=playerKey(player)
-                    if identity~=me or selfOn.Value then
+                    if (identity~=me or selfOn.Value) and not isPlayerWhitelisted(player) then
                         present[identity]=true
                         local record=records[identity]
                         if not record then record={drawings={},nextRead=0,moves={}};records[identity]=record end
@@ -3347,7 +3471,7 @@ local function mountPlayerESP()
         local view=camera.ViewportSize
         local entries={}
         for identity,sample in pairs(preparedPlayers) do
-            entries[#entries+1]={identity=identity,sample=sample}
+            if not isPlayerWhitelisted(sample.player) then entries[#entries+1]={identity=identity,sample=sample} end
         end
         -- Alphabetical order is independent of camera direction and distance.
         table.sort(entries,function(a,b) return a.identity<b.identity end)
@@ -3419,11 +3543,14 @@ local function mountPlayerESP()
         -- Only current root positions, one camera and drawing updates run here.
         -- No GetPlayers, move discovery, HUD scans, tags or rig-size reads.
         for _,cached in pairs(preparedPlayers) do
-            local sample={player=cached.player,record=cached.record,character=cached.character,root=cached.root}
-            local success,position=pcall(freshRootPosition,sample.root)
-            if success and position then
-                sample.position=position;samples[#samples+1]=sample
-            else reportPlayerError(sample.record,sample.player,position) end
+            if isPlayerWhitelisted(cached.player) then hide(cached.record)
+            else
+                local sample={player=cached.player,record=cached.record,character=cached.character,root=cached.root}
+                local success,position=pcall(freshRootPosition,sample.root)
+                if success and position then
+                    sample.position=position;samples[#samples+1]=sample
+                else reportPlayerError(sample.record,sample.player,position) end
+            end
         end
         -- Native ESP frames bypass the strict raw-matrix acceptance gate which
         -- froze old drawings during camera movement and caused catch-up jumps.
@@ -3651,7 +3778,7 @@ local function mountMahoragaCounter()
         local present = {}
         local localPlayer = Players.LocalPlayer
         local localCount = localPlayer and spinValue(localPlayer.Character)
-        if camera and showSelf.Value and localCount~=nil then
+        if camera and showSelf.Value and localCount~=nil and not isPlayerWhitelisted(localPlayer) then
             local humanoid=localPlayer.Character:FindFirstChildOfClass("Humanoid")
             if not humanoid or humanoid.Health>0 then drawBar(camera,localCount) else hideBar() end
         else
@@ -3663,7 +3790,7 @@ local function mountMahoragaCounter()
             -- A player leaving or replacing a character must not break other counters.
             pcall(function()
                 local isSelf = player == localPlayer
-                if isSelf then return end
+                if isSelf or isPlayerWhitelisted(player) then return end
                 if (isSelf and not showSelf.Value) or (not isSelf and not showOthers.Value) then return end
                 if not camera then return end
                 local character = player.Character
