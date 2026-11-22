@@ -366,6 +366,7 @@ local destroyHeadRide
 local destroyMahoragaCounter
 local destroyPlayerESP
 local destroyPlayersTab
+local destroyInputBuffer,suspendInputBuffer
 
 local function message(text)
     if text ~= lastStatus then lastStatus=text;  end
@@ -380,6 +381,7 @@ state = {}
 function state.Destroy()
     if not alive then return end
     alive=false; enabled=false
+    if destroyInputBuffer then pcall(destroyInputBuffer) end
     if destroyPlayersTab then pcall(destroyPlayersTab) end
     if destroyPlayerESP then pcall(destroyPlayerESP) end
     if destroyMahoragaCounter then pcall(destroyMahoragaCounter) end
@@ -988,6 +990,97 @@ local function macroTap(vk)
     keyrelease(vk)
     macroHeldKeys[vk]=nil
 end
+local function mountInputBuffer()
+    local page=window:Tab("Input Buffer")
+    page:Paragraph({Name="Hold to repeat",Content="Hold 1–4 or either mouse button to repeat at a 25 ms target interval. Release to stop. Close the menu while playing."})
+    local status=page:Paragraph({Name="Input status",Content="Off"})
+    local held={}
+    local stopped=false
+    local repeatInterval=.025
+    local inputs={
+        {key=0x31},{key=0x32},{key=0x33},{key=0x34},
+        {key=0x01,mouse=1},{key=0x02,mouse=2}
+    }
+    local function releaseInput(input)
+        if input.mouse==1 then
+            if type(mouse1release)=="function" then pcall(mouse1release) end
+        elseif input.mouse==2 then
+            if type(mouse2release)=="function" then pcall(mouse2release) end
+        elseif type(keyrelease)=="function" then pcall(keyrelease,input.key) end
+    end
+    local function releaseAll()
+        for _,input in ipairs(inputs) do
+            local state=held[input.key]
+            if state and state.owned then releaseInput(input) end
+        end
+        held={}
+    end
+    local toggle=page:Toggle({Name="25 ms input buffer",Default=false,Flag="input_buffer_25ms",
+        Callback=function(on) if not on then releaseAll() end end})
+    local lastStatus
+    local function message(text)
+        if text~=lastStatus then status:Set(text);lastStatus=text end
+    end
+    local function supported(input)
+        if input.mouse==1 then return type(mouse1release)=="function" and type(mouse1press)=="function" end
+        if input.mouse==2 then return type(mouse2release)=="function" and type(mouse2press)=="function" end
+        return type(keyrelease)=="function" and type(keypress)=="function"
+    end
+    local function repeatInput(input,state)
+        -- Finish each synthetic cycle DOWN, matching the physical held state.
+        -- A normal click (down/up) would falsely make iskeypressed report a
+        -- release after our own injection and prematurely stop hold-to-repeat.
+        state.owned=true
+        if input.mouse==1 then mouse1release();mouse1press()
+        elseif input.mouse==2 then mouse2release();mouse2press()
+        else keyrelease(input.key);keypress(input.key) end
+    end
+    local function updateBuffer(now)
+        if stopped or not alive or not toggle.Value then releaseAll();message("Off");return end
+        if macroBusy then message("Paused during macro");return end
+        local menuOK,menuOpen=pcall(function() return window:IsOpen() end)
+        if not menuOK or menuOpen then releaseAll();message("Paused while menu is open");return end
+        local allowedOK,allowed=pcall(macroInputAllowed)
+        if not allowedOK or not allowed then releaseAll();message("Paused: focus, chat or whitelist");return end
+        if type(iskeypressed)~="function" then releaseAll();message("Key-state API unavailable");return end
+        local missing=false
+        for _,input in ipairs(inputs) do
+            if supported(input) then
+                local downOK,down=pcall(iskeypressed,input.key)
+                local state=held[input.key]
+                if not downOK or down~=true then
+                    -- The physical release already delivered key-up to the game.
+                    held[input.key]=nil
+                elseif not state then
+                    -- The user's initial press already reached Roblox. First
+                    -- repeat happens only after 25 ms, never as a duplicate press.
+                    held[input.key]={nextAt=now+repeatInterval,owned=false}
+                elseif now>=state.nextAt then
+                    repeatInput(input,state)
+                    -- At most one repeat per update: no burst after a frame stall.
+                    state.nextAt=now+repeatInterval
+                end
+            else missing=true end
+        end
+        message(missing and "Active: some mouse/key APIs unavailable" or "Active · 25 ms target")
+    end
+    if task and type(task.spawn)=="function" and type(task.wait)=="function" then
+        task.spawn(function()
+            while alive and not stopped do
+                local ok,err=pcall(updateBuffer,tick and tick() or os.clock())
+                if not ok then
+                    releaseAll();toggle:Set(false)
+                    message("Stopped: "..tostring(err))
+                end
+                task.wait(toggle.Value and .005 or .05)
+            end
+            releaseAll()
+        end)
+    else message("Scheduler API unavailable") end
+    return function() stopped=true;releaseAll() end,releaseAll
+end
+destroyInputBuffer,suspendInputBuffer=mountInputBuffer()
+
 macrosTab:Section("Aizen Macros")
 aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=false,Callback=function(on)
     aizenOn=on
@@ -1010,6 +1103,7 @@ local function runMacro(selected)
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
         return
     end
+    if suspendInputBuffer then suspendInputBuffer() end
     macroBusy=true
     task.spawn(function()
         local ok,err=pcall(function()
@@ -1066,6 +1160,7 @@ local function runGojoMacro(selected)
         macroReport("Requires iskeypressed, keypress, keyrelease, isrbxactive and task APIs.")
         return
     end
+    if suspendInputBuffer then suspendInputBuffer() end
     macroBusy=true
     task.spawn(function()
         local ok,err=pcall(function()
@@ -1112,6 +1207,7 @@ local function runUptiltMacro(profile, isSelected)
         macroReport(profile.." requires mouse1press and mouse1release plus the keyboard macro APIs.")
         return
     end
+    if suspendInputBuffer then suspendInputBuffer() end
     macroBusy=true
     task.spawn(function()
         local mouseHeld,spaceHeld=false,false
