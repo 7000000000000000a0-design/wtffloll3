@@ -1924,15 +1924,17 @@ local function mountPlayerESP()
         end)
         if ok and number(current) and number(minimum) and number(maximum)
             and minimum>=0 and maximum>minimum and maximum<=1000000
-            and current>=minimum and current<=maximum then
-            return (current-minimum)/(maximum-minimum),current,minimum,maximum
+            and current>=-1000000 and current<=1000000 then
+            -- A drain/update can briefly cross a bound. Preserve the known cap
+            -- and clamp the actual reading rather than losing the entire meter.
+            return math.max(0,math.min(1,(current-minimum)/(maximum-minimum))),current,minimum,maximum
         end
         return nil
     end
     local function readMode(player,character,secondary)
         -- ABA stores awakening charge on the Player as a constrained value.
         -- Read its actual maximum; do not assume that 100 or 1 means full.
-        local names=secondary and {"GatesBar","BloodBar","RoomBar","KaidoBar","AstaBar","TimeStopBar","RagnaBar","IndraArrowBar","SecondBar","Charge2","SecondCharge","SecondaryCharge","SecondModeCharge","SecondModeBar","SecondaryBar","ModeBar2","Mode2","SecondMode","Awakening2","Ultimate2"} or {"Charge"}
+        local names=secondary and {"GatesBar","BloodBar","RoomBar","KaidoBar","AstaBar","TimeStopBar","RagnaBar","SungJinWooBar","IndraArrowBar","SecondBar","Charge2","SecondCharge","SecondaryCharge","SecondModeCharge","SecondModeBar","SecondaryBar","ModeBar2","Mode2","SecondMode","Awakening2","Ultimate2"} or {"Charge"}
         local sources={player,character,child(player,"Stats"),child(player,"PlayerData"),child(character,"Stats")}
         for i=1,5 do
             local candidates={}
@@ -2368,6 +2370,9 @@ local function mountPlayerESP()
         elseif number(previous) and number(record.mode) and previous-record.mode>.00001 then
             record.inferredMode=true
         end
+        -- Game source (MusicPlayer and character FX) uses these exact markers
+        -- for awakening, including Sung Jin Woo; they are not charge amounts.
+        if child(character,"State2") or child(character,"State3") then return true end
         local containers={character,child(character,"Stats"),player}
         for i=1,3 do
             local container=containers[i]
@@ -2933,7 +2938,7 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.showMode2=false;record.previousModeCharge=nil;record.inferredMode=false;record.moves={};record.cooldowns={};record.lastMovesRead=nil
+            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.lastModeRead=nil;record.mode2=nil;record.showMode2=false;record.previousModeCharge=nil;record.inferredMode=false;record.moves={};record.cooldowns={};record.lastMovesRead=nil
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -2951,7 +2956,11 @@ local function mountPlayerESP()
         if now>=record.nextRead then
             if modeOn.Value then
                 local success,value=pcall(readMode,player,character)
-                if success then record.mode=value end
+                if success and number(value) then
+                    record.mode=value;record.lastModeRead=now
+                elseif not record.lastModeRead or now-record.lastModeRead>.25 then
+                    record.mode=nil
+                end
                 local secondOk,secondValue,secondSource=pcall(readMode,player,character,true)
                 if secondOk then
                     record.mode2=secondValue
@@ -2987,7 +2996,7 @@ local function mountPlayerESP()
         if modeOn.Value then
             local ratio=record.mode
             if left then
-                verticalMeter(record,"mode",ratio,left-5,top,bodyHeight,modeRed)
+                if ratio~=nil then verticalMeter(record,"mode",ratio,left-5,top,bodyHeight,modeRed) end
                 if record.mode2~=nil and record.showMode2 then
                     verticalMeter(record,"mode2",record.mode2,right+3,top,bodyHeight,secondPurple)
                 end
