@@ -2475,6 +2475,7 @@ local function mountPlayerESP()
     local modeOn=espTab:Toggle({Name="Mode bar ESP",Default=true,Flag="player_mode_esp"})
     local sidebarOn=espTab:Toggle({Name="Mode bars on screen side",Default=false,Flag="mode_screen_sidebar"})
     local movesOn=espTab:Toggle({Name="Move cooldown ESP",Default=true,Flag="player_move_esp"})
+    local moveSize=espTab:Slider({Name="Move box size (%)",Min=25,Max=200,Default=100,Increment=5,Flag="player_move_esp_size"})
     local selfOn=espTab:Toggle({Name="Show yourself",Default=false,Flag="player_esp_show_self"})
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
     local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
@@ -3894,11 +3895,13 @@ local function mountPlayerESP()
                     slotCount=math.max(slotCount,move.slot)
                 end
             end
-            -- Fit the ENTIRE stack within the mode lines, including every gap.
-            -- Never impose a minimum card height that could overflow the bars.
+            -- At 100%, fit the full stack to the mode lines. Scale only the
+            -- move cards, their text and gaps by the user's size preference.
             local gap=math.min(4,bodyHeight/(slotCount*12))
             local available=math.max(0,bodyHeight-gap*(slotCount-1))
-            local cardSize=available/slotCount
+            local sizeMultiplier=math.max(.25,math.min(2,(tonumber(moveSize.Value) or 100)/100))
+            local cardSize=available/slotCount*sizeMultiplier
+            gap=gap*sizeMultiplier
             local cardScale=cardSize/64
             -- Stable player-relative offsets. Do not flip sides or clamp the
             -- stack against the screen edge independently of the character.
