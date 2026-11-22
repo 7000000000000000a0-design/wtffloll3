@@ -2194,6 +2194,61 @@ local function mountPlayerESP()
         state.displaySeconds=seconds;state.displayRevision=state.revision
         return seconds
     end
+    local guardbreakKeys={"Guardbreak","GuardBreak","Guardbreaks","GuardBreaks",
+        "GUARDBREAK","GUARDBREAKS","GuardBreakMove","CanGuardBreak","BreaksGuard","BlockBreak","Blockbreak","GB"}
+    local function guardbreakBoolean(value)
+        if type(value)=="boolean" then return value end
+        if number(value) then return value>0 end
+        if type(value)=="string" then
+            local low=value:lower():gsub("[%s_%-]","")
+            if low=="true" or low=="yes" or low=="1" or low=="on"
+                or low=="guardbreak" or low=="guardbreaks" or low=="blockbreak" then return true end
+            if low=="false" or low=="no" or low=="0" or low=="off" or low=="none" then return false end
+        end
+        return nil
+    end
+    local function hudGuardbreak(player,slot,name)
+        if not slot then return nil end
+        local rows=child(child(child(player,"PlayerGui"),"HUD"),"Moves")
+        local row=child(rows,tostring(slot))
+        if not row then return nil end
+        local title=child(row,"TextLabel")
+        local titleOK,titleText=pcall(function() return title and title.Text end)
+        if titleOK and type(titleText)=="string" and titleText~="" and titleText~=name then return nil end
+        local rowOK,rowVisible=pcall(function() return row.Visible end)
+        if rowOK and rowVisible==false then return nil end
+        local ok,labels=pcall(function() return row:GetChildren() end)
+        if not ok or type(labels)~="table" then return nil end
+        for _,label in ipairs(labels) do
+            local readable,text,visible=pcall(function() return label.Text,label.Visible end)
+            if readable and visible==true and type(text)=="string" then
+                local low=text:lower():gsub("[%s_%-]","")
+                if low=="guardbreak" or low=="guardbreaks" or low=="blockbreak" then return true end
+            end
+        end
+        return nil
+    end
+    local function readGuardbreak(player,move,config,slot,name)
+        for _,container in ipairs({config,move}) do
+            for _,key in ipairs(guardbreakKeys) do
+                local flag=guardbreakBoolean(attribute(container,key))
+                if flag~=nil then return flag end
+                local marker=child(container,key)
+                if marker then
+                    local ok,value=pcall(function() return marker.Value end)
+                    -- Preserve an explicit false BoolValue instead of treating
+                    -- the marker's presence alone as enabled.
+                    if ok then
+                        local markerFlag=guardbreakBoolean(value)
+                        if markerFlag~=nil then return markerFlag end
+                    end
+                    local classOK,class=pcall(function() return marker.ClassName end)
+                    if classOK and (class=="Folder" or class=="Configuration") then return true end
+                end
+            end
+        end
+        return hudGuardbreak(player,slot,name)
+    end
     local function readMoves(player,character,record,now)
         local moves,seen={},{}
         if record then record.cooldowns=record.cooldowns or {} end
@@ -2243,7 +2298,8 @@ local function mountPlayerESP()
                     local key=tostring(identity)
                     present[key]=true
                     moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,
-                        source=source,instance=identity}
+                        source=source,instance=identity,
+                        guardbreak=readGuardbreak(player,move,config,slot,tostring(name))}
                 elseif depth>0 and move.ClassName=="Folder" and move.Name~=".Config" then
                     scan(move,depth-1)
                 end
@@ -2266,6 +2322,7 @@ local function mountPlayerESP()
             end
         end
         for _,move in ipairs(moves) do
+            if move.guardbreak==nil then move.guardbreak=hudGuardbreak(player,move.slot,move.name) end
             if record then
                 move.cd,move.source=trackCooldown(record.cooldowns,tostring(move.instance),move.cd,move.source,now)
             end
@@ -2611,10 +2668,10 @@ local function mountPlayerESP()
         square(record,key.."Cooldown",x,y+h-overlayHeight,w,overlayHeight,Color3.fromRGB(100,103,110))
         set(record.drawings[key.."Cooldown"],"ZIndex",902)
         set(record.drawings[key.."Cooldown"],"Transparency",.75)
-        local function text(suffix,text,tx,ty,size,center)
+        local function text(suffix,text,tx,ty,size,center,color)
             local d=object(record,key..suffix,"Text")
             set(d,"Size",size);set(d,"Center",center);set(d,"ZIndex",903)
-            label(record,key..suffix,text,tx,ty,white)
+            label(record,key..suffix,text,tx,ty,color or white)
         end
         local textScale=math.min(w/64,h/64)
         record.moveTextLayouts=record.moveTextLayouts or {}
@@ -2630,6 +2687,7 @@ local function mountPlayerESP()
         local nameSize=font("nameSize",10*textScale)
         local stateSize=font("stateSize",9*textScale)
         local slotSize=font("slotSize",11*textScale)
+        local guardSize=font("guardSize",7*textScale)
         if h>22 then layout.compact=false elseif h<18 then layout.compact=true end
         if h>38 then layout.lines=2 elseif h<34 then layout.lines=1 end
         if not layout.compact then
@@ -2654,12 +2712,20 @@ local function mountPlayerESP()
             if #lines>maxLines then lines[maxLines]=lines[maxLines]:sub(1,math.max(1,maxChars-2))..".." end
             local count=math.min(maxLines,#lines)
             local nameY=y+(h-count*(nameSize+1))/2
+            if move.guardbreak==true then nameY=nameY-math.max(2,guardSize*.5) end
             for row=1,count do text("Name"..row,lines[row],x+w/2,nameY+(row-1)*(nameSize+1),nameSize,true) end
         end
         local seconds=number(move.cooldownSeconds) and move.cooldownSeconds or nil
         local state=not known and "UNKNOWN" or ready and "READY"
             or (seconds and (math.max(1,math.ceil(seconds-.000001)).."s") or "...")
         local stateY=layout.compact and y+(h-stateSize)/2 or y+h-stateSize-2
+        if move.guardbreak==true then
+            local caption=layout.compact and "GB" or "GUARDBREAK"
+            local markerSize=layout.compact and math.max(3,math.min(guardSize,h*.35)) or guardSize
+            if layout.compact then stateY=y+h-stateSize-1 end
+            local markerY=layout.compact and y or stateY-markerSize-math.max(1,2*textScale)
+            text("Guardbreak",caption,x+w/2,markerY,markerSize,true,Color3.fromRGB(255,220,100))
+        end
         text("State",state,x+w/2,stateY,stateSize,true)
     end
     local function updatePlayer(player,record,now,frame)
