@@ -3477,7 +3477,7 @@ local function mountPlayerESP()
         local layout=sidebarLayout(view.X,view.Y,#entries,1)
         local scale=layout.scale
         local green=Color3.fromRGB(0,255,0)
-        local cyan=Color3.fromRGB(70,200,230)
+        local sidebarModeRed=Color3.fromRGB(235,35,35)
         local seen={}
         for index=layout.first,layout.last do
             local entry=entries[index]
@@ -3494,7 +3494,7 @@ local function mountPlayerESP()
             set(name,"Center",true)
             label(row,"Name",identity,x+width/2,y,modeRed)
             sidebarMeter(row,"Health",data.healthRatio,x,y+23*scale,width,15*scale,4,green,scale)
-            sidebarMeter(row,"Mode",data.mode,x+4*scale,y+44*scale,width-8*scale,12*scale,10,cyan,scale)
+            sidebarMeter(row,"Mode",data.mode,x+4*scale,y+44*scale,width-8*scale,12*scale,10,sidebarModeRed,scale)
             if data.mode2~=nil and data.showMode2 then
                 -- The third row is exclusively the actual secondary-mode reading.
                 sidebarMeter(row,"Mode2",data.mode2,x+4*scale,y+62*scale,width-8*scale,12*scale,10,secondPurple,scale)
