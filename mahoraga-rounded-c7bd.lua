@@ -2540,20 +2540,51 @@ local function mountPlayerESP()
         end
         return record.inferredMode==true
     end
+    -- User-selected secondary-meter visibility. Resolve the actual character,
+    -- because shared meter names (e.g. TimeStopBar) have different policies.
+    local secondaryVisibility={
+        asta="always",ragna="always",sungjinwoo="always",
+        mightguy="always",mightgai="always",guy="always",denji="always",
+        hit="mode",jogo="mode",rukia="mode",rukiakuchiki="mode",
+        alucard="mode",alucardhellsing="mode",alucardadrianfahrenheit="mode",
+        sasukewararc="mode",sasukeuchihawararc="mode",wararcsasuke="mode",
+        sasukewar="mode",warsasuke="mode",
+        gokugt="mode",songokugt="mode",gtgoku="mode"
+    }
+    local function secondaryCharacterPolicy(player,character)
+        local names={
+            componentCooldown(character,"SpawnChar",true),
+            attribute(character,"SpawnChar"),
+            componentCooldown(character,"LastLoadedChar",true),
+            attribute(character,"LastLoadedChar"),
+            componentCooldown(player,"LastLoadedChar",true),
+            attribute(player,"LastLoadedChar")
+        }
+        -- Fixed indices preserve later identity sources when earlier ones are nil.
+        for i=1,6 do
+            if type(names[i])=="string" then
+                local normalized=names[i]:lower():gsub("[^%w]","")
+                local policy=secondaryVisibility[normalized]
+                if policy then return policy end
+                if normalized:find("sasuke",1,true) and normalized:find("war",1,true) then return "mode" end
+                if normalized:find("goku",1,true) and normalized:find("gt",1,true) then return "mode" end
+                if normalized:match("^alucard") then return "mode" end
+                if normalized:match("^asta") or normalized:match("^ragna")
+                    or normalized:find("sungjinwoo",1,true) then return "always" end
+            end
+        end
+        return nil
+    end
     local function showSecondaryMode(player,character,record,source)
         if record.mode2==nil then return false end
-        -- Sung Jin Woo's secondary resource exists in base as well as mode.
-        -- Meter presence and a valid reading are sufficient; never gate on skills.
-        if source=="SungJinWooBar" then return true end
+        local policy=secondaryCharacterPolicy(player,character)
+        if policy=="always" then return true end
         local inMode=activeMode(player,character,record)
-        local name=attribute(character,"SpawnChar") or attribute(character,"LastLoadedChar")
-            or componentCooldown(player,"LastLoadedChar",true) or attribute(player,"LastLoadedChar") or ""
-        local normalized=tostring(name):lower()
-        -- These meters are base-form resources even if stored as SecondBar.
-        if source=="AstaBar" or source=="RagnaBar"
-            or normalized:find("asta",1,true) or normalized:find("ragna",1,true)
-            or normalized:gsub("[^%w]",""):find("sungjinwoo",1,true) then return true end
-        -- Honor explicit policy on the actual meter when supplied by the game.
+        -- Explicit user choices take precedence over generic resource-bar rules
+        -- and meter attributes. Hit's TimeStopBar must therefore be mode-only.
+        if policy=="mode" then return inMode end
+        if source=="AstaBar" or source=="RagnaBar" or source=="SungJinWooBar" then return true end
+        if source=="IndraArrowBar" then return inMode end
         local meter=child(player,source) or child(character,source)
         if meter then
             local base=guardbreakBoolean(attribute(meter,"ShowInBase"))
@@ -2561,8 +2592,6 @@ local function mountPlayerESP()
             local modeOnly=guardbreakBoolean(attribute(meter,"ModeOnly"))
             if modeOnly~=nil then return not modeOnly or inMode end
         end
-        -- Named base resources are not second awakenings. Generic second-mode
-        -- charge and damage-based awakening meters must wait for active mode.
         if source=="BloodBar" or source=="RoomBar" or source=="TimeStopBar" then return true end
         return inMode
     end
