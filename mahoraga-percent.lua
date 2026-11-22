@@ -2625,7 +2625,7 @@ local function mountPlayerESP()
             set(d,"Size",size);set(d,"Center",center);set(d,"ZIndex",903)
             label(record,key..suffix,text,tx,ty,white)
         end
-        local textScale=math.min(1.5,w/64,h/64)
+        local textScale=math.min(1,w/64,h/64)
         record.moveTextLayouts=record.moveTextLayouts or {}
         local layout=record.moveTextLayouts[key]
         if not layout then layout={compact=h<20,lines=h>=36 and 2 or 1};record.moveTextLayouts[key]=layout end
@@ -2727,9 +2727,18 @@ local function mountPlayerESP()
             end
         end
         if movesOn.Value then
-            local cardSize=math.max(8,math.min(96,bodyHeight*.38))
+            local slotCount=math.max(1,#record.moves)
+            for _,move in ipairs(record.moves) do
+                if number(move.slot) and move.slot>=1 and move.slot<=99 and move.slot%1==0 then
+                    slotCount=math.max(slotCount,move.slot)
+                end
+            end
+            -- Fit the ENTIRE stack within the mode lines, including every gap.
+            -- Never impose a minimum card height that could overflow the bars.
+            local gap=math.min(4,bodyHeight/(slotCount*12))
+            local available=math.max(0,bodyHeight-gap*(slotCount-1))
+            local cardSize=math.min(64,available/slotCount)
             local cardScale=cardSize/64
-            local gap=math.max(1,4*cardScale)
             -- Stable player-relative offsets. Do not flip sides or clamp the
             -- stack against the screen edge independently of the character.
             local boxX=right+math.max(10,46*cardScale)
