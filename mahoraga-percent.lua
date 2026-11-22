@@ -1027,6 +1027,66 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
         lastError=tostring(otherError);print("[ABA Timings] "..lastError)
     end
 end)
+-- One camera snapshot per ESP frame, with a native-projection fallback for Matcha.
+local function screenProjection(camera)
+    if not camera then return nil end
+    local view=camera.ViewportSize
+    local frame={camera=camera,width=view.X,height=view.Y}
+    pcall(function()
+        local fov=camera.FieldOfView
+        if type(fov)=="number" and fov>0 and fov<180 then
+            frame.focal=view.Y/(2*math.tan(math.rad(fov)/2))
+        end
+    end)
+    pcall(function() frame.position=camera.CFrame.Position end)
+    pcall(function()
+        local matrix={camera.CFrame:GetComponents()}
+        if #matrix~=12 then return end
+        for i=1,12 do
+            if type(matrix[i])~="number" or matrix[i]~=matrix[i] then return end
+        end
+        local rightLength=matrix[4]^2+matrix[7]^2+matrix[10]^2
+        local upLength=matrix[5]^2+matrix[8]^2+matrix[11]^2
+        local backLength=matrix[6]^2+matrix[9]^2+matrix[12]^2
+        if math.abs(rightLength-1)>.01 or math.abs(upLength-1)>.01 or math.abs(backLength-1)>.01 then return end
+        if frame.focal then frame.matrix=matrix end
+    end)
+    return frame
+end
+local function projectToScreen(position,camera,frame)
+    if not camera or not position then return nil,false end
+    frame=frame or screenProjection(camera)
+    if frame and frame.matrix then
+        local m=frame.matrix
+        local dx,dy,dz=position.X-m[1],position.Y-m[2],position.Z-m[3]
+        local depth=-(dx*m[6]+dy*m[9]+dz*m[12])
+        if depth<=.01 then return nil,false,depth end
+        local x=frame.width/2+(dx*m[4]+dy*m[7]+dz*m[10])*frame.focal/depth
+        local y=frame.height/2-(dx*m[5]+dy*m[8]+dz*m[11])*frame.focal/depth
+        return Vector2.new(x,y),x>=0 and y>=0 and x<=frame.width and y<=frame.height,depth
+    end
+    local function accept(point,visible)
+        if not point then return nil,false end
+        local ok,x,y=pcall(function() return point.X,point.Y end)
+        if not ok or type(x)~="number" or type(y)~="number" or x~=x or y~=y then return nil,false end
+        local depth
+        pcall(function() local z=point.Z;if type(z)=="number" then depth=z end end)
+        if depth and depth<=0 then return nil,false,depth end
+        if visible==nil then
+            local v=camera.ViewportSize
+            visible=x>=0 and y>=0 and x<=v.X and y<=v.Y
+        end
+        return point,visible,depth
+    end
+    if type(WorldToScreen)=="function" then
+        local ok,point,visible=pcall(WorldToScreen,position)
+        if ok and point then return accept(point,visible) end
+    end
+    local ok,point,visible=pcall(function() return camera:WorldToViewportPoint(position) end)
+    if ok then return accept(point,visible) end
+    return nil,false
+end
+
 local function mountHeadRide()
     --[[
         Anime Battle Arena - Head Ride 
@@ -1048,6 +1108,19 @@ local function mountHeadRide()
         local ok, res = pcall(fn)
         if ok then return res end
         return fallback
+    end
+
+    local function notify(content,title,duration)
+        pcall(function() window:Notify({Title=title or "Head Ride",Content=tostring(content),Duration=duration or 4}) end)
+    end
+    local velocityPart
+    local function stopRideVelocity()
+        local part=velocityPart
+        velocityPart=nil
+        if not part then return end
+        local zero=Vector3.new(0,0,0)
+        pcall(function() part.AssemblyLinearVelocity=zero end)
+        pcall(function() part.Velocity=zero end)
     end
 
     local function gv(id, default)
@@ -1142,9 +1215,9 @@ local function mountHeadRide()
     -- target selection
     -- ===========================================================================
     local function screenDistToCentre(pos)
-        local projected, screen, onScreen = pcall(WorldToScreen, pos)
-        if not projected or not screen or not onScreen then return nil end
-        local cam  = safe(function() return workspace.CurrentCamera end, nil)
+        local cam = safe(function() return world.CurrentCamera end, nil)
+        local screen,onScreen=projectToScreen(pos,cam)
+        if not screen or not onScreen then return nil end
         local vps  = cam and safe(function() return cam.ViewportSize end, nil)
         if not vps then return nil end
         local dx = screen.X - (vps.X / 2)
@@ -1253,6 +1326,7 @@ local function mountHeadRide()
         dt = math.clamp(dt, 0.001, 0.1)
 
         if not rideEnabled() then
+            stopRideVelocity()
             currentTarget, lockedTarget = nil, nil
             lastStatus = "idle"
             return
@@ -1260,6 +1334,7 @@ local function mountHeadRide()
 
         local me = myRoot()
         if not me or not isAlive(LocalPlayer) then
+            stopRideVelocity()
             currentTarget, lockedTarget = nil, nil
             lastStatus = "no living character"
             return
@@ -1274,18 +1349,21 @@ local function mountHeadRide()
         end
 
         if not currentTarget then
+            stopRideVelocity()
             lastStatus = "no target"
             return
         end
 
         local goal = goalPosition(currentTarget)
         if not goal then
+            stopRideVelocity()
             lastStatus = "target has no head"
             return
         end
 
         local here = safe(function() return me.Position end, nil)
         if not here then
+            stopRideVelocity()
             lastStatus = "cannot read position"
             return
         end
@@ -1298,6 +1376,7 @@ local function mountHeadRide()
         local arrived = dist <= 1.0
 
         if mode == 0 then
+            stopRideVelocity()
             local dest
             if climb > 0 then
                 -- travel at a fixed speed, so the approach reads as a climb
@@ -1322,14 +1401,17 @@ local function mountHeadRide()
             if climb > 0 and want.Magnitude > climb then
                 want = want.Unit * climb
             end
+            if velocityPart and velocityPart~=me then stopRideVelocity() end
             local ok = pcall(function() me.AssemblyLinearVelocity = want end)
             if not ok then
                 ok = pcall(function() me.Velocity = want end)
             end
             if ok then
+                velocityPart=me
                 stepCount = stepCount + 1
                 lastStatus = arrived and "riding (velocity)" or "climbing"
             else
+                stopRideVelocity()
                 lastStatus = "velocity write failed"
             end
         end
@@ -1338,6 +1420,7 @@ local function mountHeadRide()
     local function updateRide()
         local ok, err = pcall(rideStep)
         if not ok then
+            stopRideVelocity()
             currentTarget, lockedTarget = nil, nil
             lastStatus = tostring(err)
         end
@@ -1425,8 +1508,8 @@ local function mountHeadRide()
             return
         end
 
-        local projected, screen, onScreen = pcall(WorldToScreen, pos)
-        if not projected or not screen or not onScreen then
+        local screen,onScreen=projectToScreen(pos,world.CurrentCamera)
+        if not screen or not onScreen then
             hideDrawings()
             return
         end
@@ -1523,6 +1606,7 @@ local function mountHeadRide()
     toggle("ride_team", "Ignore teammates", true)
     tab:Button({Name = "Drop target", Callback = function()
         lockedTarget, currentTarget = nil, nil
+        stopRideVelocity()
     end})
 
     tab:Section("Indicator")
@@ -1575,11 +1659,13 @@ local function mountHeadRide()
         end})
     tab:Button({Name = "Reset", Callback = function()
         controls.ride_on:Set(false)
+        stopRideVelocity()
         lockedTarget, currentTarget = nil, nil
         hideDrawings()
     end})
 
     return function()
+        stopRideVelocity()
         for _, connection in ipairs(connections) do
             pcall(function() connection:Disconnect() end)
         end
@@ -1880,133 +1966,163 @@ local function mountPlayerESP()
         -- Match ABA's own client: (GetAttribute("COOLDOWN") or 20).
         -- Reports confirm that the same move gains this attribute while recharging
         -- and can lose it again. Successful nil reads are READY for every player.
-        if ok and value==nil then return 20,"ready default" end
         -- GetAttributes can return a value dictionary or a names-only array.
         -- Names-only entries cannot recover a failed numeric read.
         local readable,attributes=pcall(function() return move:GetAttributes() end)
         if readable and type(attributes)=="table" and number(attributes.COOLDOWN) then
             return attributes.COOLDOWN,"attribute fallback"
         end
+        if ok and value==nil then return 20,"ready default" end
         return nil,"read failed"
     end
     local function trackCooldown(history,key,cd,source,now)
         local state=history[key]
-        if not state then state={points={},cycle=0};history[key]=state end
-        local live=source=="HUD" or source=="attribute" or source=="component attribute"
-            or source=="value" or source=="attribute fallback"
-        local function predicted()
-            if state.rate and state.seen and now-state.seen<=.5 then
+        if not state then state={sources={},cycle=0,revision=0};history[key]=state end
+        local ranks={HUD=1,["attribute fallback"]=2,value=3,attribute=3,["component attribute"]=4}
+        local live=ranks[source]~=nil
+        local function beginCycle()
+            state.sources={};state.active=true;state.rate=nil;state.endsAt=nil
+            state.pendingReset=nil;state.correction=nil;state.readySince=nil
+            state.last=nil;state.seen=nil;state.fitAt=now
+            state.cycle=state.cycle+1;state.revision=state.revision+1
+            state.displaySeconds=nil
+        end
+        local function prediction()
+            if state.active and state.rate and state.last and state.seen
+                and now-state.seen<=.5 and state.endsAt and state.endsAt>now then
                 return math.min(19.999,state.last+math.max(0,now-state.seen)*state.rate),"estimated"
             end
             return nil,"unavailable"
         end
-        local function start()
-            state.points={};state.active=true;state.rate=nil;state.endsAt=nil
-            state.source=source;state.pendingReset=nil;state.readySince=nil
-            state.cycle=state.cycle+1;state.displaySeconds=nil;state.fitAt=now
-        end
-        local function ready()
-            state.active=false;state.last=20;state.seen=now;state.endsAt=nil
+        local function markReady()
+            state.active=false;state.last=20;state.seen=now;state.endsAt=nil;state.rate=nil
             state.readySince=nil;state.pendingReset=nil;state.displaySeconds=nil
             return 20,source
         end
-        -- Require repeated ready reads; one stale 20 must not flash READY.
+        -- Actual absent-attribute readiness does not depend on estimating a rate.
         local readyRead=(live and number(cd) and cd>=20 and cd<=20.001)
-            or (source=="ready default" and state.endsAt and now>=state.endsAt-.05)
+            or source=="ready default"
         if readyRead then
-            if not state.active then return ready() end
+            if not state.active then return markReady() end
             state.readySince=state.readySince or now
-            if now-state.readySince>=.04 then return ready() end
-            return predicted()
+            if now-state.readySince>=.04 then return markReady() end
+            if state.last then return math.min(19.999,state.last),"last observed" end
+            return nil,"unavailable"
         end
         state.readySince=nil
-        if live and number(cd) and cd>=0 and cd<20 then
-            if not state.active then
-                start()
-            elseif state.last and cd<state.last-.05 then
-                -- Only sustained, substantial drops mean a new cooldown cycle.
-                -- Ignore isolated old packets and small HUD quantization errors.
-                local large=state.last-cd>=math.max(2,state.last*.25)
-                if large then
-                    local pending=state.pendingReset
-                    if not pending or cd<pending.value-.5 then
-                        state.pendingReset={since=now,count=1,value=cd}
-                    else
-                        pending.count=pending.count+1;pending.value=cd
-                        if pending.count>=3 and now-pending.since>=.08 then start() end
-                    end
-                    if state.pendingReset then return predicted() end
-                else
-                    state.pendingReset=nil
-                    return predicted()
-                end
-            else state.pendingReset=nil end
-            -- Switching between HUD and attributes must not restart the timer.
-            if state.source~=source then state.points={};state.source=source end
-            local points=state.points
-            if #points==0 or (cd>points[#points].cd and now-points[#points].time>=.025) then
-                points[#points+1]={cd=cd,time=now}
-                while #points>32 or (#points>2 and now-points[1].time>1.6) do table.remove(points,1) end
-                local first=points[1]
-                if #points>=6 and now-first.time>=.6 then
-                    -- Median pairwise slopes withstand individual jittery samples.
-                    local slopes={}
-                    for i=1,#points-1 do
-                        for j=i+1,#points do
-                            local dt=points[j].time-points[i].time
-                            if dt>=.25 then
-                                local rate=(points[j].cd-points[i].cd)/dt
-                                if rate>.01 and rate<=400 then slopes[#slopes+1]=rate end
-                            end
-                        end
-                    end
-                    if #slopes>=6 then
-                        table.sort(slopes)
-                        local function median(values)
-                            table.sort(values)
-                            local n=#values
-                            if n%2==0 then return (values[n/2]+values[n/2+1])/2 end
-                            return values[(n+1)/2]
-                        end
-                        local rate=median(slopes)
-                        local low=slopes[math.max(1,math.floor(#slopes*.25))]
-                        local high=slopes[math.max(1,math.floor(#slopes*.75))]
-                        if (high-low)/rate<=.2 then
-                            local intercepts={}
-                            for _,point in ipairs(points) do
-                                intercepts[#intercepts+1]=point.cd-rate*(point.time-first.time)
-                            end
-                            local intercept=median(intercepts)
-                            local candidate=first.time+(20-intercept)/rate
-                            if candidate>now then
-                                if not state.endsAt then state.endsAt=candidate
-                                else
-                                    -- Refine gently, rather than replace the clock each poll.
-                                    local limit=math.max(0,now-(state.fitAt or now))*.2
-                                    state.endsAt=state.endsAt+math.max(-limit,math.min(limit,candidate-state.endsAt))
-                                end
-                                state.rate=rate
-                            end
-                        end
-                    end
-                end
-                state.fitAt=now
-            end
-            state.last=math.max(state.last and state.active and state.last or 0,cd)
-            -- A confirmed restart establishes its new low progress value.
-            if #points==1 then state.last=cd end
-            state.seen=now
-            return state.last,source
+        if not live or not number(cd) or cd<0 or cd>=20 then return prediction() end
+        if not state.active then beginCycle() end
+        local series=state.sources[source]
+        if not series then
+            series={points={},seen=now,progressAt=now,high=cd}
+            state.sources[source]=series
         end
-        if state.active and state.last then return predicted() end
+        -- Compare only against this source's own progress, never a different HUD.
+        local tolerance=source=="HUD" and .15 or .05
+        if series.last and cd<series.last-tolerance then
+            local pending=state.pendingReset
+            if not pending or pending.source~=source or cd<pending.value-tolerance then
+                pending={source=source,value=cd,since=now,count=1}
+                state.pendingReset=pending
+            else pending.count=pending.count+1;pending.value=cd end
+            if pending.count>=3 and now-pending.since>=.08 then
+                beginCycle()
+                series={points={},seen=now,progressAt=now,high=cd}
+                state.sources[source]=series
+            else return prediction() end
+        elseif state.pendingReset and state.pendingReset.source==source then
+            state.pendingReset=nil
+        end
+        -- A stalled progress feed invalidates its clock, even if reads succeed.
+        local meaningful=source=="HUD" and .08 or .02
+        if cd>(series.high or cd)+meaningful then
+            local interval=now-(series.progressAt or now)
+            if interval>0 then series.cadence=series.cadence and series.cadence*.7+interval*.3 or interval end
+            if series.paused then series.points={};series.rate=nil;series.endsAt=nil end
+            series.high=cd;series.progressAt=now;series.paused=false
+        end
+        series.last=cd;series.seen=now
+        local stallLimit=math.max(.45,math.min(2,(series.cadence or .1)*2))
+        series.paused=now-(series.progressAt or now)>stallLimit
+        local points=series.points
+        if #points==0 or now-points[#points].time>=.025 then
+            points[#points+1]={cd=cd,time=now}
+            while #points>32 or (#points>2 and now-points[1].time>1.6) do table.remove(points,1) end
+        end
+        if series.paused then series.endsAt=nil;series.rate=nil end
+        if not series.paused and #points>=6 and now-points[1].time>=.6 then
+            local slopes={}
+            for i=1,#points-1 do
+                for j=i+1,#points do
+                    local dt=points[j].time-points[i].time
+                    if dt>=.25 then
+                        local rate=(points[j].cd-points[i].cd)/dt
+                        if rate>.01 and rate<=400 then slopes[#slopes+1]=rate end
+                    end
+                end
+            end
+            if #slopes>=6 then
+                local function median(values)
+                    table.sort(values)
+                    local n=#values
+                    if n%2==0 then return (values[n/2]+values[n/2+1])/2 end
+                    return values[(n+1)/2]
+                end
+                local rate=median(slopes)
+                local low=slopes[math.max(1,math.floor(#slopes*.25))]
+                local high=slopes[math.max(1,math.floor(#slopes*.75))]
+                if (high-low)/rate<=.2 then
+                    local first=points[1]
+                    local intercepts={}
+                    for _,point in ipairs(points) do intercepts[#intercepts+1]=point.cd-rate*(point.time-first.time) end
+                    local candidate=first.time+(20-median(intercepts))/rate
+                    if candidate>now then series.rate=rate;series.endsAt=candidate end
+                end
+            end
+        end
+        -- Source histories survive switching. Prefer fresh direct data to the HUD.
+        local chosen,chosenSource,rank
+        for name,entry in pairs(state.sources) do
+            if now-entry.seen<=.5 and not entry.paused and entry.endsAt
+                and entry.endsAt>now and (not rank or ranks[name]>rank) then
+                chosen,chosenSource,rank=entry,name,ranks[name]
+            end
+        end
+        if chosen then
+            local candidate=chosen.endsAt
+            if not state.endsAt then
+                state.endsAt=candidate;state.revision=state.revision+1
+                state.correction=nil
+            elseif math.abs(candidate-state.endsAt)>.35 then
+                local correction=state.correction
+                if not correction or correction.source~=chosenSource or math.abs(candidate-correction.value)>.35 then
+                    state.correction={source=chosenSource,value=candidate,since=now,count=1}
+                else
+                    correction.count=correction.count+1;correction.value=correction.value*.5+candidate*.5
+                    if correction.count>=3 and now-correction.since>=.15 then
+                        state.endsAt=correction.value;state.revision=state.revision+1;state.correction=nil
+                    end
+                end
+            else
+                local limit=math.max(0,now-(state.fitAt or now))*.1
+                state.endsAt=state.endsAt+math.max(-limit,math.min(limit,candidate-state.endsAt))
+                state.correction=nil
+            end
+            state.rate=chosen.rate
+        else
+            state.endsAt=nil;state.rate=nil;state.correction=nil
+        end
+        state.fitAt=now;state.last=cd;state.seen=now
         return cd,source
     end
     local function cooldownSeconds(state,now)
         if not state or not state.active or not number(state.endsAt) then return nil end
         local seconds=math.max(1,math.ceil(state.endsAt-now-.000001))
-        -- Within a cycle the visible whole-second countdown may only decrease.
-        if state.displaySeconds then seconds=math.min(seconds,state.displaySeconds) end
-        state.displaySeconds=seconds
+        -- Small fit noise cannot bounce a number; confirmed extensions can correct it.
+        if state.displaySeconds and state.displayRevision==state.revision then
+            seconds=math.min(seconds,state.displaySeconds)
+        end
+        state.displaySeconds=seconds;state.displayRevision=state.revision
         return seconds
     end
     local function readMoves(player,character,record,now)
@@ -2052,7 +2168,6 @@ local function mountPlayerESP()
                     -- instance owns the cooldown independently of its display name.
                     local key=tostring(identity)
                     present[key]=true
-                    if record then cd,source=trackCooldown(record.cooldowns,key,cd,source,now) end
                     moves[#moves+1]={name=tostring(name),slot=slot,cd=number(cd) and cd or nil,
                         source=source,instance=identity}
                 elseif depth>0 and move.ClassName=="Folder" and move.Name~=".Config" then
@@ -2073,11 +2188,13 @@ local function mountPlayerESP()
                 if value~=nil and move.source~="component attribute" and move.source~="attribute"
                     and move.source~="value" and move.source~="attribute fallback" then
                     move.cd,move.source=value,"HUD"
-                    if record then move.cd,move.source=trackCooldown(record.cooldowns,tostring(move.instance),value,"HUD",now) end
                 end
             end
         end
         for _,move in ipairs(moves) do
+            if record then
+                move.cd,move.source=trackCooldown(record.cooldowns,tostring(move.instance),move.cd,move.source,now)
+            end
             local history=record and record.cooldowns[tostring(move.instance)]
             if number(move.cd) and move.cd<20 and history and number(history.endsAt) then
                 move.cooldownEndsAt=history.endsAt
@@ -2180,21 +2297,8 @@ local function mountPlayerESP()
         end
         record.drawings={}
     end
-    local function project(position,camera)
-        -- Matcha exposes WorldToScreen; its result can be Vector2 with no Z.
-        if type(WorldToScreen)=="function" then
-            local ok,point,onScreen=pcall(WorldToScreen,position)
-            if ok and point then
-                if onScreen==nil then
-                    local view=camera.ViewportSize
-                    onScreen=point.X>=0 and point.Y>=0 and point.X<=view.X and point.Y<=view.Y
-                end
-                return point,onScreen
-            end
-        end
-        local ok,point,onScreen=pcall(function() return camera:WorldToViewportPoint(position) end)
-        if ok then return point,onScreen end
-        return nil,false
+    local function project(position,camera,frame)
+        return projectToScreen(position,camera,frame)
     end
     local function object(record,key,kind)
         local d=record.drawings[key]
@@ -2215,68 +2319,63 @@ local function mountPlayerESP()
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
     end
-    local function bodyBounds(record,character,root,camera,rootPosition)
-        -- Cache rig dimensions, never animated limb positions or accessories.
-        if not record.bounds then
-            local rootHalf,headHeight,torsoWidth,armWidth,legHeight,hip=1,1,2,1,2,0
-            pcall(function() rootHalf=root.Size.Y/2 end)
-            local head=child(character,"Head")
-            local torso=child(character,"UpperTorso") or child(character,"Torso")
-            local arm=child(character,"LeftUpperArm") or child(character,"Left Arm")
-            local leg=child(character,"Left Leg") or child(character,"Right Leg")
+    local function bodyBounds(record,character,root,camera,rootPosition,rootPoint,frame)
+        -- Read sizes rather than animated limb positions. Refresh on every draw so
+        -- transforms, scaling and late-loading rig parts immediately update bounds.
+        local function dimension(part,axis,fallback)
+            local ok,value=pcall(function() return part.Size[axis] end)
+            if ok and number(value) and value>0 then return value end
+            return fallback
+        end
+        local head=child(character,"Head")
+        local torso=child(character,"UpperTorso") or child(character,"Torso")
+        local arm=child(character,"LeftUpperArm") or child(character,"Left Arm")
+        local leg=child(character,"Left Leg") or child(character,"Right Leg")
+        local foot=child(character,"LeftFoot") or child(character,"RightFoot")
+        local rootHalf=dimension(root,"Y",2)/2
+        local headHeight=dimension(head,"Y",1)
+        local legHeight=dimension(leg,"Y",2)
+        if foot then
+            legHeight=dimension(child(character,"LeftUpperLeg"),"Y",1)
+                +dimension(child(character,"LeftLowerLeg"),"Y",1)+dimension(foot,"Y",1)
+        end
+        local hip
+        pcall(function()
             local hum=character:FindFirstChildOfClass("Humanoid")
-            pcall(function() if number(head.Size.Y) then headHeight=head.Size.Y end end)
-            pcall(function() if number(torso.Size.X) then torsoWidth=torso.Size.X end end)
-            pcall(function() if number(arm.Size.X) then armWidth=arm.Size.X end end)
-            pcall(function() if number(leg.Size.Y) then legHeight=leg.Size.Y end end)
-            pcall(function() if number(hum.HipHeight) then hip=hum.HipHeight end end)
-            local r15=child(character,"LeftFoot") or child(character,"RightFoot")
-            record.bounds={
-                upper=rootHalf+headHeight+.5,
-                lower=rootHalf+(r15 and math.max(0,hip) or legHeight+math.max(0,hip)),
-                halfWidth=torsoWidth/2+armWidth+.15,
-            }
-        end
-        local bounds=record.bounds
+            if number(hum.HipHeight) and hum.HipHeight>=0 then hip=hum.HipHeight end
+        end)
+        local upper=rootHalf+headHeight+.5
+        local lower=rootHalf+(foot and (hip or legHeight) or legHeight+(hip or 0))
+        local halfWidth=dimension(torso,"X",2)/2+dimension(arm,"X",1)+.15
+        record.bounds={upper=upper,lower=lower,halfWidth=halfWidth}
         local center=rootPosition or root.Position
-        -- Use only the position and projection APIs supported by Matcha.
-        local point=project(center,camera)
-        local top=project(center+Vector3.new(0,bounds.upper,0),camera)
-        local bottom=project(center-Vector3.new(0,bounds.lower,0),camera)
-        if not point or not top or not bottom then return nil end
-        if not number(point.X) or not number(top.Y) or not number(bottom.Y) then return nil end
-        local height=math.abs(bottom.Y-top.Y)
-        if height<3 or height>camera.ViewportSize.Y*4 then return nil end
-        local halfWidth=height*bounds.halfWidth/(bounds.upper+bounds.lower)
-        return point.X-halfWidth,point.X+halfWidth,math.min(top.Y,bottom.Y),height
-    end
-
-    local function stableBounds(record,left,right,top,height,now)
-        local targetX=(left+right)/2
-        local targetY=top+height/2
-        local targetWidth=right-left
-        local previous=record.screenBounds
-        if not previous or now<previous.time or now-previous.time>.25
-            or math.abs(targetX-previous.x)>80 or math.abs(targetY-previous.y)>80
-            or math.abs(height-previous.height)>math.max(40,previous.height*.5) then
-            previous={x=targetX,y=targetY,width=targetWidth,height=height,time=now}
-            record.screenBounds=previous
-        else
-            local dt=math.max(0,math.min(.1,now-previous.time))
-            local positionAlpha=1-math.exp(-45*dt)
-            local sizeAlpha=1-math.exp(-25*dt)
-            local function follow(current,target,alpha)
-                if math.abs(target-current)<.35 then return current end
-                return current+(target-current)*alpha
+        local point=rootPoint or project(center,camera,frame)
+        if not point or not number(point.X) or not number(point.Y) then return nil end
+        frame=frame or screenProjection(camera)
+        local scale
+        if frame and frame.focal then
+            local depth
+            if frame.matrix then
+                local m=frame.matrix
+                depth=-((center.X-m[1])*m[6]+(center.Y-m[2])*m[9]+(center.Z-m[3])*m[12])
+            elseif frame.position then
+                pcall(function() depth=(center-frame.position).Magnitude end)
             end
-            previous.x=follow(previous.x,targetX,positionAlpha)
-            previous.y=follow(previous.y,targetY,positionAlpha)
-            previous.width=follow(previous.width,targetWidth,sizeAlpha)
-            previous.height=follow(previous.height,height,sizeAlpha)
-            previous.time=now
+            if number(depth) and depth>.01 then scale=frame.focal/depth end
         end
-        return previous.x-previous.width/2,previous.x+previous.width/2,
-            previous.y-previous.height/2,previous.height
+        if not number(scale) or scale<=0 then
+            -- Older runners may not expose camera basis/FOV. This is only a size
+            -- fallback; the position still comes from the single root projection.
+            local top=project(center+Vector3.new(0,upper,0),camera,frame)
+            local bottom=project(center-Vector3.new(0,lower,0),camera,frame)
+            if top and bottom then scale=math.abs(bottom.Y-top.Y)/(upper+lower) end
+            if not number(scale) or scale<.1 then scale=record.lastScale or 12 end
+        end
+        record.lastScale=scale
+        local height=(upper+lower)*scale
+        if height<3 then height=3;scale=height/(upper+lower) end
+        if not number(height) or height<=0 then return nil end
+        return point.X-halfWidth*scale,point.X+halfWidth*scale,point.Y-upper*scale,height
     end
     local function verticalMeter(record,key,ratio,x,top,height,color)
         -- Keep a small percentage just outside each vertical mode line.
@@ -2352,11 +2451,11 @@ local function mountPlayerESP()
             or (seconds and (math.max(1,math.ceil(seconds-.000001)).."s") or "...")
         text("State",state,x+w/2,y+h-12,9,true)
     end
-    local function updatePlayer(player,record,now)
+    local function updatePlayer(player,record,now,frame)
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.screenBounds=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
+            hide(record);record.character=identity;record.bounds=nil;record.lastScale=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={}
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -2372,9 +2471,14 @@ local function mountPlayerESP()
         end)
         if okDistance and number(distance) and distance>range.Value then hide(record);return end
         local rootPosition=root.Position
-        local point,visible=project(rootPosition+Vector3.new(0,3,0),camera)
-        if not point or not visible then record.screenBounds=nil;hide(record);return end
-        -- Do not read point.Z: Matcha's Vector2 projections do not expose it.
+        if not frame or frame.camera~=camera then frame=screenProjection(camera) end
+        local point,visible,depth=project(rootPosition,camera,frame)
+        if not point or (depth and depth<=0) then hide(record);return end
+        local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition,point,frame)
+        local view=camera.ViewportSize
+        local inside=point.X>=0 and point.Y>=0 and point.X<=view.X and point.Y<=view.Y
+        if not left or right<0 or left>view.X or top+bodyHeight<0 or top>view.Y
+            or (visible==false and inside) then hide(record);return end
         if now>=record.nextRead then
             record.mode=nil;record.mode2=nil;record.moves={}
             if modeOn.Value then
@@ -2390,11 +2494,6 @@ local function mountPlayerESP()
             record.nextRead=now+.05
         end
         record.used={}
-        local left,right,top,bodyHeight=bodyBounds(record,character,root,camera,rootPosition)
-        if left then
-            left,right,top,bodyHeight=stableBounds(record,left,right,top,bodyHeight,now)
-            point=Vector2.new((left+right)/2,top-12)
-        end
         if modeOn.Value then
             local ratio=record.mode
             if left then
@@ -2406,19 +2505,34 @@ local function mountPlayerESP()
         end
         if movesOn.Value then
             local count=math.max(1,#record.moves)
-            local boxWidth,gap=64,4
-            local anchorRight=right or point.X+30
-            local anchorTop=top or point.Y
-            local anchorHeight=bodyHeight or 180
-            local boxHeight=64
-            local boxX=anchorRight+46
-            if boxX+boxWidth>camera.ViewportSize.X-4 then boxX=(left or point.X-30)-46-boxWidth end
-            local boxY=anchorTop+(anchorHeight-(count*boxHeight+(count-1)*gap))/2
+            local gap,pad=4,4
+            local boxWidth=math.min(64,math.max(1,view.X-pad*2))
+            local boxHeight=math.min(64,math.max(1,view.Y-pad*2))
+            local rows=math.min(count,math.max(1,math.floor((view.Y-pad*2+gap)/(boxHeight+gap))))
+            local columns=math.ceil(count/rows)
+            local columnGap=math.min(gap,math.max(0,(view.X-pad*2)/math.max(1,columns*2)))
+            boxWidth=math.min(boxWidth,math.max(1,(view.X-pad*2-(columns-1)*columnGap)/columns))
+            local stackWidth=columns*boxWidth+(columns-1)*columnGap
+            local stackHeight=rows*boxHeight+(rows-1)*gap
+            local rightX=right+46
+            local leftX=left-46-stackWidth
+            local rightFits=rightX+stackWidth<=view.X-pad
+            local leftFits=leftX>=pad
+            local side=record.boxSide or "right"
+            if side=="right" and not rightFits and leftFits then side="left"
+            elseif side=="left" and not leftFits and rightFits then side="right" end
+            record.boxSide=side
+            local boxX=side=="left" and leftX or rightX
+            boxX=math.max(pad,math.min(boxX,view.X-pad-stackWidth))
+            local boxY=top+(bodyHeight-stackHeight)/2
+            boxY=math.max(pad,math.min(boxY,view.Y-pad-stackHeight))
             if #record.moves==0 then
                 moveBox(record,1,{name="Moves",source="unknown"},boxX,boxY,boxWidth,boxHeight,now)
             else
                 for i,move in ipairs(record.moves) do
-                    moveBox(record,i,move,boxX,boxY+(i-1)*(boxHeight+gap),boxWidth,boxHeight,now)
+                    local column=math.floor((i-1)/rows)
+                    local row=(i-1)%rows
+                    moveBox(record,i,move,boxX+column*(boxWidth+columnGap),boxY+row*(boxHeight+gap),boxWidth,boxHeight,now)
                 end
             end
         end
@@ -2428,6 +2542,7 @@ local function mountPlayerESP()
         if stopped or not alive then return end
         local now=tick and tick() or os.clock()
         local present={}
+        local frame=screenProjection(world.CurrentCamera)
         local ok,list=pcall(function() return Players:GetPlayers() end)
         if not ok then for _,record in pairs(records) do hide(record) end;return end
         for _,player in ipairs(list) do
@@ -2436,7 +2551,7 @@ local function mountPlayerESP()
                 present[identity]=true
                 local record=records[identity]
                 if not record then record={drawings={},nextRead=0,moves={}};records[identity]=record end
-                local success,err=pcall(updatePlayer,player,record,now)
+                local success,err=pcall(updatePlayer,player,record,now,frame)
                 if not success then
                     hide(record)
                     local message=tostring(err)
@@ -2667,8 +2782,8 @@ local function mountMahoragaCounter()
                 else
                     local head = character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
                     if not head then return end
-                    local point, onScreen = camera:WorldToViewportPoint(head.Position + Vector3.new(0,3,0))
-                    if not onScreen or point.Z <= 0 then return end
+                    local point,onScreen=projectToScreen(head.Position+Vector3.new(0,3,0),camera)
+                    if not point or not onScreen then return end
                     position = Vector2.new(point.X,point.Y)
                     caption = tostring(player.DisplayName or player.Name).." | Spins: "..tostring(count)
                 end
