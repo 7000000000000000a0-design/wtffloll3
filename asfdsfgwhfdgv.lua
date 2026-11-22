@@ -1,6 +1,8 @@
 -- Matcha version. Drawing menu provided by Nova (Martinikaws).
 local old = _G.NanamiTimingMatcha
 assert(Drawing and type(Drawing.new) == "function", "Matcha Drawing API is required")
+local startupToken={}
+_G.ABAStartupToken=startupToken
 local function resolveService(name)
     local result
     -- Use literal paths and assignments inside protected calls. This avoids
@@ -8,19 +10,41 @@ local function resolveService(name)
     if name=="Players" then
         pcall(function() result=game.Players end)
         if not result then pcall(function() result=game:GetService("Players") end) end
+        if not result then pcall(function() result=game:FindFirstChild("Players") end) end
         if not result then pcall(function() result=game:FindFirstChildOfClass("Players") end) end
     elseif name=="Workspace" then
         pcall(function() result=workspace end)
         if not result then pcall(function() result=game.Workspace end) end
         if not result then pcall(function() result=game:GetService("Workspace") end) end
+        if not result then pcall(function() result=game:FindFirstChild("Workspace") end) end
         if not result then pcall(function() result=game:FindFirstChildOfClass("Workspace") end) end
     end
+    local function searchRoot(root)
+        if not root or result then return end
+        pcall(function() result=root:FindFirstChild(name) end)
+        if result then return end
+        pcall(function() result=root:FindFirstChildOfClass(name) end)
+        if result then return end
+        local children
+        pcall(function() children=root:GetChildren() end)
+        if type(children)~="table" then return end
+        for _,service in ipairs(children) do
+            local className,serviceName
+            pcall(function() className=service.ClassName end)
+            pcall(function() serviceName=service.Name end)
+            if className==name or serviceName==name then result=service;break end
+        end
+    end
+    if not result then searchRoot(game) end
     if not result then
-        pcall(function()
-            for _,service in ipairs(game:GetChildren()) do
-                if service.ClassName==name or service.Name==name then result=service;break end
-            end
-        end)
+        -- Workspace may remain readable while the global DataModel service
+        -- lookup is stale. Discover its sibling services through its parent.
+        local currentWorld,root
+        pcall(function() currentWorld=workspace end)
+        if not currentWorld then pcall(function() currentWorld=game.Workspace end) end
+        if not currentWorld then pcall(function() currentWorld=game:GetService("Workspace") end) end
+        pcall(function() root=currentWorld.Parent end)
+        searchRoot(root)
     end
     return result
 end
@@ -30,24 +54,31 @@ do
     local waitFn=task and task.wait or wait
     local now=tick or os.clock
     local deadline=now()+15
+    local reported=false
     repeat
+        if _G.ABAStartupToken~=startupToken then return end
         -- Re-resolve every pass so a stale startup wrapper is not cached.
         startupPlayers=resolveService("Players")
         startupWorld=resolveService("Workspace")
         local localPlayer
         pcall(function() localPlayer=startupPlayers.LocalPlayer end)
         if startupPlayers and startupWorld and localPlayer then break end
-        if type(waitFn)~="function" or now()>=deadline then
+        if not reported and (type(waitFn)~="function" or now()>=deadline) then
             local missing={}
             if not startupPlayers then missing[#missing+1]="Players" end
             if not startupWorld then missing[#missing+1]="Workspace" end
             if not localPlayer then missing[#missing+1]="LocalPlayer" end
-            print("[Startup] Matcha cannot read "..table.concat(missing,", ")..". Reconnect Matcha to this Roblox session, then rerun. No menu was created.")
-            return
+            print("[Startup] Waiting for Matcha access to "..table.concat(missing,", ")..". Startup will resume automatically when access returns.")
+            reported=true
         end
-        waitFn(.1)
+        if type(waitFn)~="function" then
+            print("[Startup] No wait API is available; rerun after reconnecting Matcha.");return
+        end
+        waitFn(reported and .5 or .1)
     until false
 end
+if _G.ABAStartupToken~=startupToken then return end
+_G.ABAStartupToken=nil
 if old and old.Destroy then pcall(old.Destroy) end
 local url = "https://raw.githubusercontent.com/Martinikaws/Nova/88f5bd44551d03d6a01ba07b761519eb3d8ccb34/Nova.lua"
 local source
