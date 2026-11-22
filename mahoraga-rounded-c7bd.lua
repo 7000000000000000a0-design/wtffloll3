@@ -1043,10 +1043,30 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
 end)
 -- Capture camera orientation once; use the runner's native projection for drawing.
 local rendererProjectionActive=false
-local function screenProjection(camera)
+local function screenProjection(camera,nativeESP)
     if not camera then return nil end
     local view=camera.ViewportSize
     local frame={camera=camera,width=view.X,height=view.Y}
+    if nativeESP and type(WorldToScreen)=="function" then
+        -- Native projection reads the renderer through Matcha itself. Do not
+        -- discard moving-camera updates because 32 separate float reads differ.
+        frame.nativeESP=true
+        frame.backend="WorldToScreen"
+        pcall(function()
+            local fov=camera.FieldOfView
+            if type(fov)=="number" and fov>0 and fov<180 then
+                frame.focal=view.Y/(2*math.tan(math.rad(fov)/2))
+            end
+            local matrix={camera.CFrame:GetComponents()}
+            if #matrix~=12 then return end
+            for i=1,12 do
+                if type(matrix[i])~="number" or matrix[i]~=matrix[i] then return end
+            end
+            local length=matrix[6]^2+matrix[9]^2+matrix[12]^2
+            if length>.99 and length<1.01 then frame.scaleCamera=matrix end
+        end)
+        return frame
+    end
     -- One renderer matrix for the whole draw pass. Native projection calls and
     -- camera properties can otherwise come from different camera updates.
     if visualEngineOffset and viewMatrixOffset and type(getbase)=="function" and type(memory_read)=="function" then
@@ -1142,12 +1162,13 @@ local function projectToScreen(position,camera,frame)
         local y=frame.height/2-(dx*m[5]+dy*m[8]+dz*m[11])*frame.focal/depth
         return Vector2.new(x,y),x>=0 and y>=0 and x<=frame.width and y<=frame.height,depth
     end
-    local function accept(point,visible)
+    local function accept(point,visible,is2D)
         if not point then return nil,false end
         local ok,x,y=pcall(function() return point.X,point.Y end)
         if not ok or type(x)~="number" or type(y)~="number" or x~=x or y~=y then return nil,false end
         local depth
-        pcall(function() local z=point.Z;if type(z)=="number" then depth=z end end)
+        -- WorldToScreen returns Vector2; it has no camera-space Z component.
+        if not is2D then pcall(function() local z=point.Z;if type(z)=="number" then depth=z end end) end
         if depth and depth<=0 then return nil,false,depth end
         if visible==nil then
             local v=camera.ViewportSize
@@ -1159,7 +1180,7 @@ local function projectToScreen(position,camera,frame)
     if (not frame or not frame.backend or frame.backend=="WorldToScreen") and type(WorldToScreen)=="function" then
         local ok,point,visible=pcall(WorldToScreen,position)
         if ok and point then
-            local accepted,onScreen,depth=accept(point,visible)
+            local accepted,onScreen,depth=accept(point,visible,true)
             if accepted or depth then
                 if frame then frame.backend="WorldToScreen" end
                 return accepted,onScreen,depth
@@ -2964,7 +2985,17 @@ local function mountPlayerESP()
         local scale
         -- Derive size from one captured camera pose, not differences between
         -- screen projections sampled at different points in camera motion.
-        if frame and frame.renderer then
+        if frame and frame.nativeESP then
+            -- One captured camera pose determines scale analytically. Never
+            -- subtract projections sampled on opposite sides of a camera update,
+            -- which amplifies a small timing difference into a large size jump.
+            local m=frame.scaleCamera
+            if m and frame.focal then
+                local depth=-((center.X-m[1])*m[6]+(center.Y-m[2])*m[9]+(center.Z-m[3])*m[12])
+                if depth>.01 then scale=frame.focal/depth end
+            end
+            if (not number(scale) or scale<=0) and number(record.lastScale) then scale=record.lastScale end
+        elseif frame and frame.renderer then
             local m=frame.renderer
             local depth=m[13]*center.X+m[14]*center.Y+m[15]*center.Z+m[16]
             if depth>.01 then scale=frame.pixelsPerDepth/depth end
@@ -2987,12 +3018,14 @@ local function mountPlayerESP()
         if not number(scale) or scale<=0 then
             -- Older runners may not expose camera basis/FOV. This is only a size
             -- fallback; the position still comes from the single root projection.
-            local top=project(center+Vector3.new(0,upper,0),camera,frame)
-            local bottom=project(center-Vector3.new(0,lower,0),camera,frame)
-            if top and bottom then scale=math.abs(bottom.Y-top.Y)/(upper+lower) end
+            local top,topVisible=project(center+Vector3.new(0,upper,0),camera,frame)
+            local bottom,bottomVisible=project(center-Vector3.new(0,lower,0),camera,frame)
+            if top and bottom and topVisible~=false and bottomVisible~=false then
+                scale=math.abs(bottom.Y-top.Y)/(upper+lower)
+            end
             if not number(scale) or scale<.1 then scale=record.lastScale or 12 end
         end
-        -- Position and scale use the same world anchor and same renderer matrix.
+        -- Position and scale share one world anchor and projection backend.
         -- No screen-space inertia, prediction, median sampling or catch-up drift.
         record.lastScale=scale
         local height=(upper+lower)*scale
@@ -3274,8 +3307,13 @@ local function mountPlayerESP()
                 sample.position=position;samples[#samples+1]=sample
             else reportPlayerError(sample.record,sample.player,position) end
         end
-        local frame=screenProjection(world.CurrentCamera)
-        if not frame then return end
+        -- Native ESP frames bypass the strict raw-matrix acceptance gate which
+        -- froze old drawings during camera movement and caused catch-up jumps.
+        local frame=screenProjection(world.CurrentCamera,true)
+        if not frame then
+            for _,sample in ipairs(samples) do hide(sample.record) end
+            return
+        end
         for _,sample in ipairs(samples) do
             local success,err=pcall(updatePlayer,sample.player,sample.record,now,frame,sample)
             if not success then reportPlayerError(sample.record,sample.player,err)
