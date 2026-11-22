@@ -2540,9 +2540,42 @@ local function mountPlayerESP()
         end
         return record.inferredMode==true
     end
+    local function sungAwakenedMoves(record,player,character)
+        -- Sung Jin Woo can retain his awakening kit without State2/State3.
+        -- Match distinct awakening skills, not charge level or meter presence:
+        -- SungJinWooBar also exists in base form and may retain its old charge.
+        local awakening={rulershand=true,voidstep=true,summonberu=true,darkclaw=true}
+        local seen,count={},0
+        local function observe(value)
+            local name=tostring(value or ""):lower():gsub("[^%w]","")
+            if awakening[name] and not seen[name] then seen[name]=true;count=count+1 end
+            return count>=2
+        end
+        if movesOn.Value then
+            for _,move in ipairs(record.moves or {}) do
+                if observe(move.name) then return true end
+            end
+        end
+        -- Mode-bar visibility must also work with move ESP disabled. Read only
+        -- skill names here, without doing any cooldown or HUD discovery.
+        local containers={child(player,"Backpack"),character}
+        for i=1,2 do
+            local container=containers[i]
+            if container then
+                local ok,items=pcall(function() return container:GetChildren() end)
+                if ok and type(items)=="table" then
+                    for _,item in ipairs(items) do
+                        if observe(item.Name) then return true end
+                    end
+                end
+            end
+        end
+        return false
+    end
     local function showSecondaryMode(player,character,record,source)
         if record.mode2==nil then return false end
         local inMode=activeMode(player,character,record)
+        if source=="SungJinWooBar" then return inMode or sungAwakenedMoves(record,player,character) end
         local name=attribute(character,"SpawnChar") or attribute(character,"LastLoadedChar")
             or componentCooldown(player,"LastLoadedChar",true) or attribute(player,"LastLoadedChar") or ""
         local normalized=tostring(name):lower()
@@ -3082,7 +3115,7 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.lastModeRead=nil;record.mode2=nil;record.showMode2=false;record.previousModeCharge=nil;record.inferredMode=false;record.moves={};record.cooldowns={};record.lastMovesRead=nil
+            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.lastModeRead=nil;record.mode2=nil;record.mode2Source=nil;record.showMode2=false;record.previousModeCharge=nil;record.inferredMode=false;record.moves={};record.cooldowns={};record.lastMovesRead=nil
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -3108,7 +3141,7 @@ local function mountPlayerESP()
                 local secondOk,secondValue,secondSource=pcall(readMode,player,character,true)
                 if secondOk then
                     record.mode2=secondValue
-                    record.showMode2=showSecondaryMode(player,character,record,secondSource)
+                    record.mode2Source=secondSource
                 else record.mode2=nil;record.showMode2=false end
             end
             if movesOn.Value then
@@ -3119,6 +3152,7 @@ local function mountPlayerESP()
                     record.moves={}
                 end
             end
+            record.showMode2=showSecondaryMode(player,character,record,record.mode2Source)
             record.nextRead=now+.05
         end
         refreshBodyBounds(record,character,root,now)
