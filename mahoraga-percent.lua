@@ -2579,7 +2579,7 @@ local function mountPlayerESP()
         -- Keep a small percentage just outside each vertical mode line.
         local percentKey=key.."Percent"
         local percent=object(record,percentKey,"Text")
-        local uiScale=math.min(1,math.max(.3,height/160))
+        local uiScale=math.min(1.35,math.max(.3,height/160))
         set(percent,"Size",math.max(6,math.floor(12*uiScale+.5)))
         set(percent,"Center",true)
         local percentGap=math.max(7,22*uiScale)
@@ -2625,7 +2625,7 @@ local function mountPlayerESP()
             set(d,"Size",size);set(d,"Center",center);set(d,"ZIndex",903)
             label(record,key..suffix,text,tx,ty,white)
         end
-        local textScale=math.min(1,w/64,h/64)
+        local textScale=math.min(1.5,w/64,h/64)
         record.moveTextLayouts=record.moveTextLayouts or {}
         local layout=record.moveTextLayouts[key]
         if not layout then layout={compact=h<20,lines=h>=36 and 2 or 1};record.moveTextLayouts[key]=layout end
@@ -2727,7 +2727,7 @@ local function mountPlayerESP()
             end
         end
         if movesOn.Value then
-            local cardSize=math.max(8,math.min(64,bodyHeight*.38))
+            local cardSize=math.max(8,math.min(96,bodyHeight*.38))
             local cardScale=cardSize/64
             local gap=math.max(1,4*cardScale)
             -- Stable player-relative offsets. Do not flip sides or clamp the
