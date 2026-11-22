@@ -992,11 +992,11 @@ local function macroTap(vk)
 end
 local function mountInputBuffer()
     local page=window:Tab("Input Buffer")
-    page:Paragraph({Name="Hold to repeat",Content="Hold 1–4 or either mouse button to repeat at a 25 ms target interval. Release to stop. Close the menu while playing."})
+    page:Paragraph({Name="Hold to repeat",Content="Hold 1–4 or either mouse button to repeat at a 20 ms target interval. Release to stop. Close the menu while playing."})
     local status=page:Paragraph({Name="Input status",Content="Off"})
     local held={}
     local stopped=false
-    local repeatInterval=.025
+    local repeatInterval=.020
     local inputs={
         {key=0x31},{key=0x32},{key=0x33},{key=0x34},
         {key=0x01,mouse=1},{key=0x02,mouse=2}
@@ -1015,7 +1015,7 @@ local function mountInputBuffer()
         end
         held={}
     end
-    local toggle=page:Toggle({Name="25 ms input buffer",Default=false,Flag="input_buffer_25ms",
+    local toggle=page:Toggle({Name="20 ms input buffer",Default=false,Flag="input_buffer_25ms",
         Callback=function(on) if not on then releaseAll() end end})
     local lastStatus
     local function message(text)
@@ -1053,7 +1053,7 @@ local function mountInputBuffer()
                     held[input.key]=nil
                 elseif not state then
                     -- The user's initial press already reached Roblox. First
-                    -- repeat happens only after 25 ms, never as a duplicate press.
+                    -- repeat happens only after 20 ms, never as a duplicate press.
                     held[input.key]={nextAt=now+repeatInterval,owned=false}
                 elseif now>=state.nextAt then
                     repeatInput(input,state)
@@ -1062,7 +1062,7 @@ local function mountInputBuffer()
                 end
             else missing=true end
         end
-        message(missing and "Active: some mouse/key APIs unavailable" or "Active · 25 ms target")
+        message(missing and "Active: some mouse/key APIs unavailable" or "Active · 20 ms target")
     end
     if task and type(task.spawn)=="function" and type(task.wait)=="function" then
         task.spawn(function()
