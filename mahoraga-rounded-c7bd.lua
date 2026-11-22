@@ -1964,7 +1964,7 @@ local function mountPlayerESP()
             for _,charge in ipairs(candidates) do
                 if charge then
                     local ratio=constrainedCharge(charge)
-                    if ratio~=nil then return ratio end
+                    if ratio~=nil then return ratio,tostring(charge.Name) end
                     local ok,current,maximum=pcall(function() return charge.Value,charge.MaxValue end)
                     local minOk,minimum=pcall(function() return charge.MinValue end)
                     if not minOk then minimum=nil end
@@ -1976,7 +1976,7 @@ local function mountPlayerESP()
                     end
                     minimum=number(minimum) and minimum or 0
                     if number(current) and number(maximum) and maximum>minimum and current>=minimum and current<=maximum then
-                        return (current-minimum)/(maximum-minimum)
+                        return (current-minimum)/(maximum-minimum),tostring(charge.Name)
                     end
                 end
             end
@@ -1988,18 +1988,18 @@ local function mountPlayerESP()
         for _,obj in ipairs(containers) do
             for _,key in ipairs(secondary and {"Mode2Percent","SecondModePercent","SecondModePercentage","Awakening2Percent"} or {"ModePercent","ModePercentage","AwakeningPercent"}) do
                 local value=numeric(obj,key)
-                if number(value) and value>=0 and value<=100 then return value/100 end
+                if number(value) and value>=0 and value<=100 then return value/100,key end
             end
             for _,key in ipairs(secondary and {"Mode2Ratio","SecondModeRatio","Awakening2Ratio"} or {"ModeRatio","AwakeningRatio"}) do
                 local value=numeric(obj,key)
-                if number(value) and value>=0 and value<=1 then return value end
+                if number(value) and value>=0 and value<=1 then return value,key end
             end
             for _,pair in ipairs(secondary and {{"Mode2","MaxMode2"},{"SecondMode","MaxSecondMode"},{"SecondModeCharge","MaxSecondModeCharge"},{"Awakening2","MaxAwakening2"}} or {{"Mode","MaxMode"},{"Mode","ModeMax"},{"ModeCharge","MaxModeCharge"},{"Awakening","MaxAwakening"}}) do
                 local value,maximum=numeric(obj,pair[1]),numeric(obj,pair[2])
                 local meter=child(obj,pair[1])
                 if not number(maximum) and meter then maximum=attribute(meter,"MaxValue") or attribute(meter,"Max") end
                 if number(value) and number(maximum) and maximum>0 and value>=0 and value<=maximum then
-                    return value/maximum
+                    return value/maximum,pair[1]
                 end
             end
         end
@@ -2011,7 +2011,7 @@ local function mountPlayerESP()
                 -- Some characters (including Jogo) expose a constrained damage
                 -- meter with its own actual limits, unlike GT Goku's NumberValue.
                 local ratio=constrainedCharge(damage)
-                if ratio~=nil then return ratio end
+                if ratio~=nil then return ratio,"DamageDone" end
                 local ok,value=pcall(function() return damage.Value end)
                 if ok and number(value) and value>=0 then
                     local maximum=numeric(damage,"MaxValue") or numeric(damage,"Max")
@@ -2023,7 +2023,7 @@ local function mountPlayerESP()
                         local sidebar=componentCooldown(damage,"Sidebar",true) or attribute(damage,"Sidebar")
                         maximum=sidebar=="FullPower" and 225 or 300
                     end
-                    if number(maximum) and maximum>0 then return math.min(1,value/maximum) end
+                    if number(maximum) and maximum>0 then return math.min(1,value/maximum),"DamageDone" end
                 end
             end
         end
@@ -2359,6 +2359,59 @@ local function mountPlayerESP()
         end
         if knownFalse then return false end
         return nil
+    end
+    local function activeMode(player,character,record)
+        -- Prefer explicit replicated state. A full charge alone is not mode.
+        local previous=record.previousModeCharge
+        record.previousModeCharge=record.mode
+        if number(record.mode) and record.mode<=0 then record.inferredMode=false
+        elseif number(previous) and number(record.mode) and previous-record.mode>.00001 then
+            record.inferredMode=true
+        end
+        local containers={character,child(character,"Stats"),player}
+        for i=1,3 do
+            local container=containers[i]
+            if container then
+                for _,key in ipairs({"InMode","ModeActive","Awakened","UsingMode","AwakeningActive","IsAwakened","UltimateActive","Mode"}) do
+                    local flag=guardbreakBoolean(attribute(container,key))
+                    if flag~=nil then return flag end
+                    local marker=child(container,key)
+                    if marker then
+                        local ok,value=pcall(function() return marker.Value end)
+                        if ok then flag=guardbreakBoolean(value) else flag=nil end
+                        if flag~=nil then return flag end
+                        local class=marker.ClassName
+                        if class=="Folder" or class=="Configuration" then return true end
+                    end
+                end
+            end
+        end
+        for _,tag in ipairs({"Mode","InMode","Awakened"}) do
+            if gameTag(character,tag)==true then return true end
+        end
+        return record.inferredMode==true
+    end
+    local function showSecondaryMode(player,character,record,source)
+        if record.mode2==nil then return false end
+        local inMode=activeMode(player,character,record)
+        local name=attribute(character,"SpawnChar") or attribute(character,"LastLoadedChar")
+            or componentCooldown(player,"LastLoadedChar",true) or attribute(player,"LastLoadedChar") or ""
+        local normalized=tostring(name):lower()
+        -- These meters are base-form resources even if stored as SecondBar.
+        if source=="AstaBar" or source=="RagnaBar"
+            or normalized:find("asta",1,true) or normalized:find("ragna",1,true) then return true end
+        -- Honor explicit policy on the actual meter when supplied by the game.
+        local meter=child(player,source) or child(character,source)
+        if meter then
+            local base=guardbreakBoolean(attribute(meter,"ShowInBase"))
+            if base~=nil then return base or inMode end
+            local modeOnly=guardbreakBoolean(attribute(meter,"ModeOnly"))
+            if modeOnly~=nil then return not modeOnly or inMode end
+        end
+        -- Named base resources are not second awakenings. Generic second-mode
+        -- charge and damage-based awakening meters must wait for active mode.
+        if source=="BloodBar" or source=="RoomBar" or source=="TimeStopBar" then return true end
+        return inMode
     end
     local function moveHUDRow(player,slot)
         if not slot then return nil end
@@ -2880,7 +2933,7 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.moves={};record.cooldowns={};record.lastMovesRead=nil
+            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.mode2=nil;record.showMode2=false;record.previousModeCharge=nil;record.inferredMode=false;record.moves={};record.cooldowns={};record.lastMovesRead=nil
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=Players.LocalPlayer
@@ -2899,8 +2952,11 @@ local function mountPlayerESP()
             if modeOn.Value then
                 local success,value=pcall(readMode,player,character)
                 if success then record.mode=value end
-                local secondOk,secondValue=pcall(readMode,player,character,true)
-                if secondOk then record.mode2=secondValue end
+                local secondOk,secondValue,secondSource=pcall(readMode,player,character,true)
+                if secondOk then
+                    record.mode2=secondValue
+                    record.showMode2=showSecondaryMode(player,character,record,secondSource)
+                else record.mode2=nil;record.showMode2=false end
             end
             if movesOn.Value then
                 local success,value=pcall(readMoves,player,character,record,now)
@@ -2932,7 +2988,7 @@ local function mountPlayerESP()
             local ratio=record.mode
             if left then
                 verticalMeter(record,"mode",ratio,left-5,top,bodyHeight,modeRed)
-                if record.mode2~=nil then
+                if record.mode2~=nil and record.showMode2 then
                     verticalMeter(record,"mode2",record.mode2,right+3,top,bodyHeight,secondPurple)
                 end
             end
