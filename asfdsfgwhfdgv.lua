@@ -3645,6 +3645,8 @@ local function mountPlayerESP()
         local healthOK,health,maximum=pcall(function() return humanoid.Health,humanoid.MaxHealth end)
         record.healthRatio=healthOK and number(health) and number(maximum) and maximum>0
             and math.max(0,math.min(1,health/maximum)) or nil
+        record.health=record.healthRatio~=nil and math.max(0,math.min(maximum,health)) or nil
+        record.maxHealth=record.healthRatio~=nil and maximum or nil
         local okDistance,distance=pcall(function()
             local origin=child(me and me.Character,"HumanoidRootPart")
             return (head.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
@@ -3851,6 +3853,13 @@ local function mountPlayerESP()
             set(name,"Center",true)
             label(row,"Name",identity,x+width/2,y,modeRed)
             sidebarMeter(row,"Health",data.healthRatio,x,y+23*scale,width,15*scale,4,green,scale)
+            if data.health~=nil and data.maxHealth~=nil then
+                local hpText=object(row,"HealthText","Text")
+                local hpSize=math.max(8,math.floor(12*scale+.5))
+                set(hpText,"Size",hpSize);set(hpText,"Center",true);set(hpText,"ZIndex",904)
+                label(row,"HealthText",string.format("%d / %d",math.ceil(data.health),math.ceil(data.maxHealth)),
+                    x+width/2,y+23*scale+(15*scale-hpSize)/2,white)
+            end
             sidebarMeter(row,"Mode",data.mode,x+4*scale,y+44*scale,width-8*scale,12*scale,10,sidebarModeRed,scale)
             if data.mode2~=nil and data.showMode2 then
                 -- The third row is exclusively the actual secondary-mode reading.
