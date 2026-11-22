@@ -2260,18 +2260,18 @@ local function mountPlayerESP()
         end
         local bounds=record.bounds
         local center=root.Position
-        -- One root position and one camera basis keep the box rigid during turns.
-        local up=camera.CFrame.UpVector
-        local right=camera.CFrame.RightVector
-        local topLeft=project(center+up*bounds.upper-right*bounds.halfWidth,camera)
-        local bottomRight=project(center-up*bounds.lower+right*bounds.halfWidth,camera)
-        if not topLeft or not bottomRight then return nil end
-        if not number(topLeft.X) or not number(topLeft.Y)
-            or not number(bottomRight.X) or not number(bottomRight.Y) then return nil end
-        local height=bottomRight.Y-topLeft.Y
+        -- Use only the position and projection APIs supported by Matcha.
+        local point=project(center,camera)
+        local top=project(center+Vector3.new(0,bounds.upper,0),camera)
+        local bottom=project(center-Vector3.new(0,bounds.lower,0),camera)
+        if not point or not top or not bottom then return nil end
+        if not number(point.X) or not number(top.Y) or not number(bottom.Y) then return nil end
+        local height=math.abs(bottom.Y-top.Y)
         if height<3 or height>camera.ViewportSize.Y*4 then return nil end
-        return topLeft.X,bottomRight.X,topLeft.Y,height
+        local halfWidth=height*bounds.halfWidth/(bounds.upper+bounds.lower)
+        return point.X-halfWidth,point.X+halfWidth,math.min(top.Y,bottom.Y),height
     end
+
     local function verticalMeter(record,key,ratio,x,top,height,color)
         -- Keep a small percentage just outside each vertical mode line.
         local percentKey=key.."Percent"
@@ -2308,7 +2308,7 @@ local function mountPlayerESP()
             return (head.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
         end)
         if okDistance and number(distance) and distance>range.Value then hide(record);return end
-        local point,visible=project(root.Position+camera.CFrame.UpVector*3,camera)
+        local point,visible=project(root.Position+Vector3.new(0,3,0),camera)
         if not point or not visible then hide(record);return end
         -- Do not read point.Z: Matcha's Vector2 projections do not expose it.
         if now>=record.nextRead then
@@ -2396,12 +2396,9 @@ local function mountPlayerESP()
         for player in pairs(records) do if not present[player] then removed[#removed+1]=player end end
         for _,player in ipairs(removed) do release(records[player]);records[player]=nil end
     end
-    -- Update geometry with the rendered camera; data reads still use nextRead.
-    local connected,connection=pcall(function()
-        return RunService.RenderStepped:Connect(renderESP)
-    end)
-    if connected and connection then heartbeat=connection
-    else heartbeat=RunService.Heartbeat:Connect(renderESP) end
+    -- Heartbeat is the working Matcha signal. Draw on every tick, while
+    -- nextRead keeps replicated meter/cooldown reads at the original rate.
+    heartbeat=RunService.Heartbeat:Connect(renderESP)
     return function()
         if stopped then return end
         stopped=true
