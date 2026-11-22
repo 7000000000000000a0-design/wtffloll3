@@ -1042,6 +1042,7 @@ connection=game:GetService("RunService").Heartbeat:Connect(function()
     end
 end)
 -- Capture camera orientation once; use the runner's native projection for drawing.
+local rendererProjectionActive=false
 local function screenProjection(camera)
     if not camera then return nil end
     local view=camera.ViewportSize
@@ -1077,7 +1078,11 @@ local function screenProjection(camera)
             frame.pixelsPerDepth=frame.height*.5*upLength
         end)
     end
-    if frame.renderer then return frame end
+    if frame.renderer then rendererProjectionActive=true;return frame end
+    -- Once renderer projection is established, never jump to a differently
+    -- timed Camera.CFrame / native projection on a rejected matrix sample.
+    -- The caller retains the previous drawings until the next valid snapshot.
+    if rendererProjectionActive then return nil end
     pcall(function()
         local fov=camera.FieldOfView
         if type(fov)=="number" and fov>0 and fov<180 then
@@ -2961,45 +2966,76 @@ local function mountPlayerESP()
         end
         for key,d in pairs(record.drawings) do if not record.used[key] then set(d,"Visible",false) end end
     end
+    local preparedPlayers,latestPlayerList={},{}
+    local function reportPlayerError(record,player,err)
+        hide(record)
+        local message=tostring(err)
+        if record.lastError~=message then
+            record.lastError=message
+            print("[ESP] "..tostring(player.Name)..": "..message)
+        end
+    end
+    local function refreshPlayerData()
+        while not stopped and alive do
+            local ok,list=pcall(function() return Players:GetPlayers() end)
+            if ok then
+                latestPlayerList=list
+                local present={}
+                local me=playerKey(Players.LocalPlayer)
+                for _,player in ipairs(list) do
+                    if stopped or not alive then return end
+                    local identity=playerKey(player)
+                    if identity~=me or selfOn.Value then
+                        present[identity]=true
+                        local record=records[identity]
+                        if not record then record={drawings={},nextRead=0,moves={}};records[identity]=record end
+                        local now=tick and tick() or os.clock()
+                        local success,sample=pcall(preparePlayer,player,record,now)
+                        if success then preparedPlayers[identity]=sample
+                        else preparedPlayers[identity]=nil;reportPlayerError(record,player,sample) end
+                    end
+                    -- Let the draw callback run between players, instead of
+                    -- blocking a whole frame with roster/tag/cooldown scans.
+                    task.wait()
+                end
+                local removed={}
+                for identity in pairs(records) do
+                    if not present[identity] then removed[#removed+1]=identity end
+                end
+                for _,identity in ipairs(removed) do
+                    preparedPlayers[identity]=nil
+                    release(records[identity]);records[identity]=nil
+                end
+            else
+                preparedPlayers={}
+                for _,record in pairs(records) do hide(record) end
+            end
+            task.wait(.025)
+        end
+    end
     local function renderESP()
         if stopped or not alive then return end
+        if not modeOn.Value and not movesOn.Value then
+            for _,record in pairs(records) do hide(record) end
+            return
+        end
         local now=tick and tick() or os.clock()
-        local present,prepared={},{}
-        local ok,list=pcall(function() return Players:GetPlayers() end)
-        if not ok then for _,record in pairs(records) do hide(record) end;return end
-        local me=playerKey(Players.LocalPlayer)
-        local function report(record,player,err)
-            hide(record)
-            local message=tostring(err)
-            if record.lastError~=message then
-                record.lastError=message
-                print("[ESP] "..tostring(player.Name)..": "..message)
-            end
-        end
-        -- Complete slow game-data reads for EVERY player before taking any
-        -- camera/position samples. Self and remote players share these phases.
-        for _,player in ipairs(list) do
-            local identity=playerKey(player)
-            if identity~=me or selfOn.Value then
-                present[identity]=true
-                local record=records[identity]
-                if not record then record={drawings={},nextRead=0,moves={}};records[identity]=record end
-                local success,sample=pcall(preparePlayer,player,record,now)
-                if not success then report(record,player,sample)
-                elseif sample then prepared[#prepared+1]=sample end
-            end
-        end
-        -- Read all roots together, then capture ONE fresh camera for all of
-        -- them. Never re-sample a later camera halfway through drawing players.
-        for _,sample in ipairs(prepared) do
+        local list=latestPlayerList
+        local samples={}
+        -- Only current root positions, one camera and drawing updates run here.
+        -- No GetPlayers, move discovery, HUD scans, tags or rig-size reads.
+        for _,cached in pairs(preparedPlayers) do
+            local sample={player=cached.player,record=cached.record,character=cached.character,root=cached.root}
             local success,position=pcall(freshRootPosition,sample.root)
-            if success then sample.position=position
-            else report(sample.record,sample.player,position) end
+            if success and position then
+                sample.position=position;samples[#samples+1]=sample
+            else reportPlayerError(sample.record,sample.player,position) end
         end
         local frame=screenProjection(world.CurrentCamera)
-        for _,sample in ipairs(prepared) do
+        if not frame then return end
+        for _,sample in ipairs(samples) do
             local success,err=pcall(updatePlayer,sample.player,sample.record,now,frame,sample)
-            if not success then report(sample.record,sample.player,err)
+            if not success then reportPlayerError(sample.record,sample.player,err)
             else sample.record.lastError=nil end
         end
         if capture then
@@ -3010,9 +3046,6 @@ local function mountPlayerESP()
                 notify("Cooldown recording failed","See Matcha output for the recording error.")
             end
         end
-        local removed={}
-        for player in pairs(records) do if not present[player] then removed[#removed+1]=player end end
-        for _,player in ipairs(removed) do release(records[player]);records[player]=nil end
     end
     local renderConnection,renderBinding
     local lastRenderSignal=-math.huge
@@ -3036,10 +3069,12 @@ local function mountPlayerESP()
         local now=tick and tick() or os.clock()
         if now-lastRenderSignal>.1 then renderESP() end
     end)
+    task.spawn(refreshPlayerData)
     return function()
         if stopped then return end
         stopped=true
         capture=nil
+        preparedPlayers={}
         if renderBinding then pcall(function() RunService:UnbindFromRenderStep(renderBinding) end) end
         if renderConnection then pcall(function() renderConnection:Disconnect() end) end
         if heartbeat then pcall(function() heartbeat:Disconnect() end) end
