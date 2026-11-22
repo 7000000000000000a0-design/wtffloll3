@@ -2,6 +2,34 @@
 local old = _G.NanamiTimingMatcha
 if old and old.Destroy then pcall(old.Destroy) end
 assert(Drawing and type(Drawing.new) == "function", "Matcha Drawing API is required")
+local function resolveService(name)
+    local ok,value=pcall(function() return game:GetService(name) end)
+    if ok and value then return value end
+    ok,value=pcall(function() return game[name] end)
+    if ok and value then return value end
+    ok,value=pcall(function() return game:FindFirstChild(name) end)
+    if ok then return value end
+end
+-- Resolve once: some Matcha builds return nil on later GetService calls.
+-- Do this before creating the menu so a loading character cannot leave a
+-- half-mounted menu behind.
+local startupPlayers,startupWorld
+do
+    local waitFn=task and task.wait or wait
+    local now=tick or os.clock
+    local deadline=now()+15
+    repeat
+        startupPlayers=startupPlayers or resolveService("Players")
+        startupWorld=startupWorld or resolveService("Workspace")
+        local ok,localPlayer=pcall(function() return startupPlayers.LocalPlayer end)
+        if startupPlayers and startupWorld and ok and localPlayer then break end
+        if type(waitFn)~="function" or now()>=deadline then
+            print("[Startup] Players, Workspace or LocalPlayer is not available. Wait for the game to load, then run the script again.")
+            return
+        end
+        waitFn(.1)
+    until false
+end
 local url = "https://raw.githubusercontent.com/Martinikaws/Nova/88f5bd44551d03d6a01ba07b761519eb3d8ccb34/Nova.lua"
 local source
 if type(httpget) == "function" then source = httpget(url) else source = game:HttpGet(url) end
@@ -441,8 +469,8 @@ function state.Destroy()
 end
 _G.NanamiTimingMatcha=state
 
-local players=game:GetService("Players")
-local world=game:GetService("Workspace")
+local players=startupPlayers
+local world=startupWorld
 -- Shared whitelist: stable account IDs, plus a username fallback for runtimes
 -- which do not expose UserId. All player-aware features consult this service.
 local playerWhitelist=type(_G.ABAPlayerWhitelist)=="table" and _G.ABAPlayerWhitelist or {}
@@ -1807,7 +1835,7 @@ local function mountHeadRide()
 
     local controls = {}
     local connections = {}
-    local Players     = game:GetService("Players")
+    local Players     = players
     local RunService  = game:GetService("RunService")
     local LocalPlayer = Players.LocalPlayer
 
@@ -2388,7 +2416,7 @@ end
 destroyHeadRide = mountHeadRide()
 
 local function mountPlayerESP()
-    local Players=game:GetService("Players")
+    local Players=players
     local RunService=game:GetService("RunService")
     local espTab=window:Tab("ESP")
     local modeOn=espTab:Toggle({Name="Mode bar ESP",Default=true,Flag="player_mode_esp"})
@@ -4084,7 +4112,7 @@ destroyPlayerESP=mountPlayerESP()
 
 -- Reads the same replicated value as aba.rbxl's built-in spin GUI.
 local function mountMahoragaCounter()
-    local Players = game:GetService("Players")
+    local Players = players
     local RunService = game:GetService("RunService")
     local counterTab = window:Tab("Mahoraga")
     counterTab:Section("Wheel spin counter")
