@@ -126,10 +126,6 @@ local menuColorSource=table.concat({
     "        end",
     "        if type(saved.__menu)==\"string\" then applyMenuColor(hexToColor(saved.__menu) or C.bg) end",
     "        settings:Colorpicker({Name=\"Menu color\",Default=C.bg,Callback=function(c) applyMenuColor(c); Window:Save() end})",
-    "        settings:Button({Name=\"Upload background\", Callback=function()",
-    "            local ok = pcall(writefile, folder .. \"/discord-background-request.txt\", tostring(tick()))",
-    "            Window:Notify({Title=\"Upload background\", Content=ok and \"Checking Discord for the latest PNG or JPG. Keep the Discord background helper running.\" or \"The executor workspace is unavailable.\"})",
-    "        end})",
     "",
 }, "\n")
 local accentMarker="        accentEl.menuAccent = true"
@@ -2007,11 +2003,6 @@ local function mountPlayerESP()
     local function notify(title,text)
         pcall(function() window:Notify({Title=title,Content=text}) end)
     end
-    espTab:Button({Name="Record cooldowns (20 seconds)",Callback=function()
-        local now=tick and tick() or os.clock()
-        capture={start=now,finish=now+20,last={},lines={"ABA cooldown timeline v1"},headers={}}
-        notify("Cooldown recording","Recording for 20 seconds. Have the other player use moves 1, 2, 3, and 4. The report will be copied when finished.")
-    end})
     local function captureTick(list,now)
         if not capture then return end
         local job=capture
@@ -2078,111 +2069,6 @@ local function mountPlayerESP()
             notify("Cooldown recording finished",copied and "Report copied. Paste it into this chat." or saved and "Saved aba-cooldown-timeline.txt in the Matcha workspace." or "Report printed in Matcha output.")
         end
     end
-    espTab:Button({Name="Inspect ESP data",Callback=function()
-        local lines={"ABA ESP data report v3 (independent move timers)"}
-        local function line(text) if #lines<240 then lines[#lines+1]=tostring(text) end end
-        local function inspect(obj,path,depth)
-            if not obj or #lines>=240 then return end
-            local class="?"
-            pcall(function() class=obj.ClassName end)
-            line(path.." ["..tostring(class).."]")
-            if class=="Configuration" and child(obj,".Config") then
-                local readable,value=pcall(function() return obj:GetAttribute("COOLDOWN") end)
-                line("  COOLDOWN_RAW="..(readable and tostring(value) or ("ERROR: "..tostring(value))))
-                line("  COOLDOWN_COMPONENT="..tostring(componentCooldown(obj)))
-                local cd=readCooldown(obj)
-                line("  COOLDOWN_STATE="..(number(cd) and (cd>=20 and "READY" or "COOLDOWN") or "Unknown").." progress="..tostring(cd))
-            end
-            local ok,attrs=pcall(function() return obj:GetAttributes() end)
-            if not ok then line("  GetAttributes ERROR: "..tostring(attrs))
-            elseif type(attrs)=="table" then
-                local keys={}
-                for k,v in pairs(attrs) do
-                    if type(k)=="string" then keys[#keys+1]=k
-                    elseif type(v)=="string" then keys[#keys+1]=v end
-                end
-                table.sort(keys)
-                for _,key in ipairs(keys) do
-                    local success,value=pcall(function() return obj:GetAttribute(key) end)
-                    if success and value~=nil then line("  @"..key.."="..tostring(value))
-                    elseif type(attrs[key])=="number" or type(attrs[key])=="boolean" then line("  @"..key.."="..tostring(attrs[key]))
-                    else line("  @"..key.." unreadable"..(not success and (": "..tostring(value)) or "")) end
-                end
-            else line("  GetAttributes returned "..type(attrs)) end
-            local success,value=pcall(function() return obj.Value end)
-            if success and (type(value)=="number" or type(value)=="boolean") then line("  Value="..tostring(value)) end
-            local ratio,current,minimum,maximum=constrainedCharge(obj)
-            if ratio~=nil then
-                line("  Constrained current="..current.." min="..minimum.." max="..maximum)
-                line(string.format("  ModePercent=%.2f",ratio*100))
-            end
-            for _,property in ipairs({"MaxValue","MinValue"}) do
-                local readable,value=pcall(function() return obj[property] end)
-                if readable and type(value)=="number" then line("  "..property.."="..tostring(value)) end
-            end
-            if depth<=0 then return end
-            local success,children=pcall(function() return obj:GetChildren() end)
-            if not success then line("  GetChildren ERROR: "..tostring(children));return end
-            for _,item in ipairs(children) do
-                local name=tostring(item.Name)
-                local low=name:lower()
-                local relevant=low:find("mode",1,true) or low:find("awak",1,true) or low:find("charge",1,true)
-                    or low:find("cool",1,true) or low=="stats" or low=="playerdata" or low==".config"
-                local config=child(item,".Config")
-                local valueObject=false
-                pcall(function()
-                    local classes={NumberValue=true,IntValue=true,DoubleConstrainedValue=true,IntConstrainedValue=true,FloatValue=true,BoolValue=true,StringValue=true}
-                    valueObject=classes[item.ClassName]==true
-                end)
-                if relevant or config or valueObject or path:find("Backpack",1,true) then
-                    inspect(item,path.."/"..name,depth-1)
-                end
-            end
-        end
-        local ok,err=pcall(function()
-            local list=Players:GetPlayers()
-            local ordered={}
-            if Players.LocalPlayer then ordered[#ordered+1]=Players.LocalPlayer end
-            for _,player in ipairs(list) do if player~=Players.LocalPlayer and #ordered<3 then ordered[#ordered+1]=player end end
-            for _,player in ipairs(ordered) do
-                line("--- "..tostring(player.Name)..(player==Players.LocalPlayer and " (SELF)" or " (OTHER)").." ---")
-                local rows=readMoves(player,player.Character,records[playerKey(player)],tick and tick() or os.clock())
-                for _,move in ipairs(rows) do
-                    line("MOVE "..tostring(move.slot).." "..move.name.." progress="..tostring(move.cd).." source="..move.source)
-                end
-                local second=readMode(player,player.Character,true)
-                if second~=nil then line(string.format("SECOND_MODE=%.2f%%",second*100)) end
-                local damage=child(player.Character,"DamageDone")
-                if damage then
-                    line("SECOND_SIDEBAR="..tostring(componentCooldown(damage,"Sidebar",true) or attribute(damage,"Sidebar")))
-                    inspect(damage,"Character/DamageDone",0)
-                end
-                inspect(child(player,"Charge"),"Player/Charge",1)
-                inspect(child(player,"SecondBar"),"Player/SecondBar",1)
-                inspect(child(player,"RagnaBar"),"Player/RagnaBar",1)
-                inspect(child(player,"TimeStopBar"),"Player/TimeStopBar",1)
-                inspect(child(player,"AstaBar"),"Player/AstaBar",1)
-                inspect(child(player,"KaidoBar"),"Player/KaidoBar",1)
-                inspect(child(player,"RoomBar"),"Player/RoomBar",1)
-                inspect(child(player,"BloodBar"),"Player/BloodBar",1)
-                inspect(child(player,"GatesBar"),"Player/GatesBar",1)
-                inspect(child(player.Character,"IndraArrowBar"),"Character/IndraArrowBar",1)
-                -- Capture moves before optional metadata so other-player cooldowns
-                -- cannot be pushed out by body parts, sounds, and attachments.
-                inspect(child(player,"Backpack"),"Backpack",3)
-                inspect(player.Character,"Character",0)
-            end
-        end)
-        if not ok then line("REPORT ERROR: "..tostring(err)) end
-        local report=table.concat(lines,"\n")
-        local copied=false
-        if type(setclipboard)=="function" then copied=pcall(setclipboard,report) end
-        if not copied and type(toclipboard)=="function" then copied=pcall(toclipboard,report) end
-        local saved=false
-        if type(writefile)=="function" then saved=pcall(writefile,"aba-esp-data.txt",report) end
-        print(report)
-        pcall(function() window:Notify({Title="ESP data report",Content=copied and "Report copied. Paste it into this chat." or saved and "Saved aba-esp-data.txt in the Matcha workspace. Send that file here." or "Report printed in Matcha output. Copy it into this chat."}) end)
-    end})
     local function set(d,key,value)
         local values=drawingValues[d]
         if not values then values={};drawingValues[d]=values end
@@ -2418,7 +2304,7 @@ local function mountMahoragaCounter()
     local counterTab = window:Tab("Mahoraga")
     counterTab:Section("Wheel spin counter")
     local showSelf = counterTab:Toggle({Name="Show my wheel bar", Default=true, Flag="mahoraga_self"})
-    local showOthers = counterTab:Toggle({Name="Show other players' spins", Default=true, Flag="mahoraga_others"})
+    local showOthers = {Value=true}
     local counterColor = Color3.fromRGB(255,220,120)
     local barColor = counterTab:Colorpicker({Name="Bar colour", Default=Color3.fromRGB(35,255,0), Flag="mahoraga_bar_color"})
 
