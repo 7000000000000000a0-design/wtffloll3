@@ -367,6 +367,7 @@ local destroyMahoragaCounter
 local destroyPlayerESP
 local destroyPlayersTab
 local destroyInputBuffer,suspendInputBuffer
+local destroyBlockWatcher
 
 local function message(text)
     if text ~= lastStatus then lastStatus=text;  end
@@ -381,6 +382,7 @@ state = {}
 function state.Destroy()
     if not alive then return end
     alive=false; enabled=false
+    if destroyBlockWatcher then pcall(destroyBlockWatcher) end
     if destroyInputBuffer then pcall(destroyInputBuffer) end
     if destroyPlayersTab then pcall(destroyPlayersTab) end
     if destroyPlayerESP then pcall(destroyPlayerESP) end
@@ -1080,6 +1082,134 @@ local function mountInputBuffer()
     return function() stopped=true;releaseAll() end,releaseAll
 end
 destroyInputBuffer,suspendInputBuffer=mountInputBuffer()
+
+local function mountBlockWatcher()
+    local page=window:Tab("Block Detection")
+    page:Paragraph({Name="Use a move when unblocked",Content="Watch one player and press the selected move once when they are not blocking and within range. Re-arms after they block again. Aim the move yourself."})
+    local enabled=page:Toggle({Name="Auto move on unblock",Default=false,Flag="auto_unblock_enabled"})
+    local target=page:Dropdown({Name="Target player",Options={"Select a player"},Default="Select a player",Flag="auto_unblock_target"})
+    local move=page:Dropdown({Name="Move key",Options={"1","2","3","4"},Default="1",Flag="auto_unblock_move"})
+    local range=page:Slider({Name="Maximum distance (studs)",Min=1,Max=500,Default=25,Increment=1,Flag="auto_unblock_range"})
+    local status=page:Paragraph({Name="Detection status",Content="Off"})
+    local stopped=false
+    local context,fired=nil,false
+    local nextRosterRead,rosterSignature=0,nil
+    local lastMessage
+    local function message(text)
+        if text~=lastMessage then status:Set(text);lastMessage=text end
+    end
+    local function refreshTargets(now)
+        if now<nextRosterRead then return end
+        nextRosterRead=now+.75
+        local names={}
+        local me=players.LocalPlayer
+        for _,player in ipairs(rosterPlayers) do
+            if player~=me then names[#names+1]=tostring(player.Name) end
+        end
+        table.sort(names,function(a,b) return a:lower()<b:lower() end)
+        table.insert(names,1,"Select a player")
+        local signature=table.concat(names,"\0")
+        if signature~=rosterSignature then target:Refresh(names,true);rosterSignature=signature end
+    end
+    local function blockingState(character)
+        local marker=character:FindFirstChild("Blocking")
+        local function decode(value)
+            if type(value)=="boolean" then return value end
+            if value==0 then return false end
+            if value==1 then return true end
+            return nil
+        end
+        if marker then
+            local ok,value=pcall(function() return marker.Value end)
+            if ok then
+                local flag=decode(value)
+                if flag~=nil then return flag end
+            end
+        end
+        local ok,value=pcall(function() return character:GetAttribute("Blocking") end)
+        if ok then return decode(value) end
+        return nil
+    end
+    local function moveReady(player,character,slot)
+        -- Respect the game's exact readiness attribute when it is exposed.
+        -- Do not interpret an arbitrary cooldown number as a percentage.
+        local containers={player:FindFirstChild("Backpack"),character}
+        for i=1,2 do
+            local container=containers[i]
+            if container then
+                for _,skill in ipairs(container:GetChildren()) do
+                    local config=skill:FindFirstChild(".Config")
+                    if config and config:FindFirstChild("Slot"..tostring(slot)) then
+                        local ok,value=pcall(function() return skill:GetAttribute("COOLDOWN") end)
+                        if ok and type(value)=="number" and value==value and value>=0 and value<=20 then
+                            return value>=19.999
+                        end
+                        return true
+                    end
+                end
+            end
+        end
+        -- Missing/streaming move data must not consume the unblock window.
+        return false
+    end
+    local function updateWatcher(now)
+        if stopped or not alive then return end
+        refreshTargets(now)
+        if not enabled.Value then context=nil;fired=false;message("Off");return end
+        local chosen
+        for _,player in ipairs(rosterPlayers) do
+            if tostring(player.Name)==tostring(target.Value) then chosen=player;break end
+        end
+        local me=players.LocalPlayer
+        if not chosen or chosen==me then context=nil;fired=false;message("Choose a player in this server");return end
+        if isPlayerWhitelisted(chosen) then context=nil;fired=false;message("Paused: selected player is whitelisted");return end
+        local character=chosen.Character
+        local ownCharacter=me and me.Character
+        if not character or not ownCharacter then message("Waiting for characters");return end
+        local slot=tonumber(move.Value)
+        if not slot or slot<1 or slot>4 or slot%1~=0 then message("Choose move key 1–4");return end
+        local identity=whitelistIdentity(chosen)
+        local current=tostring(identity)..":"..tostring(character.Address)..":"..tostring(ownCharacter.Address)..":"..tostring(slot)
+        if context~=current then context=current;fired=false end
+        local blocking=blockingState(character)
+        if blocking==nil then message("Waiting for readable blocking state");return end
+        if blocking then fired=false;message("Watching: target is blocking");return end
+        if fired then message("Move sent · waiting for another block");return end
+        local root=character:FindFirstChild("HumanoidRootPart")
+        local ownRoot=ownCharacter:FindFirstChild("HumanoidRootPart")
+        local humanoid=character:FindFirstChildOfClass("Humanoid")
+        local ownHumanoid=ownCharacter:FindFirstChildOfClass("Humanoid")
+        if not root or not ownRoot or not humanoid or not ownHumanoid
+            or humanoid.Health<=0 or ownHumanoid.Health<=0 then message("Waiting for living characters");return end
+        local distance=(root.Position-ownRoot.Position).Magnitude
+        if type(distance)~="number" or distance~=distance or distance>tonumber(range.Value) then
+            message("Target outside maximum distance");return
+        end
+        local menuOK,menuOpen=pcall(function() return window:IsOpen() end)
+        if not menuOK or menuOpen or not macroInputAllowed() then message("Paused: menu, focus, chat or whitelist");return end
+        if macroBusy then message("Paused during macro");return end
+        if type(keypress)~="function" or type(keyrelease)~="function" then message("Keyboard APIs unavailable");return end
+        if not moveReady(me,ownCharacter,slot) then message("Waiting for selected move");return end
+        if suspendInputBuffer then suspendInputBuffer() end
+        macroBusy=true
+        local key=0x30+slot
+        local ok,err=pcall(macroTap,key)
+        if macroHeldKeys[key] then pcall(keyrelease,key);macroHeldKeys[key]=nil end
+        macroBusy=false
+        if ok then fired=true;message("Move sent · waiting for another block")
+        else enabled:Set(false);message("Stopped: "..tostring(err)) end
+    end
+    local heartbeat=game:GetService("RunService").Heartbeat:Connect(function()
+        if stopped or not alive then return end
+        local ok,err=pcall(updateWatcher,tick and tick() or os.clock())
+        if not ok then message("Detection error: "..tostring(err)) end
+    end)
+    return function()
+        stopped=true;context=nil;fired=false
+        if heartbeat then pcall(function() heartbeat:Disconnect() end) end
+    end
+end
+destroyBlockWatcher=mountBlockWatcher()
 
 macrosTab:Section("Aizen Macros")
 aizenToggle=macrosTab:Toggle({Name="Use Aizen Macro",Default=false,Callback=function(on)
