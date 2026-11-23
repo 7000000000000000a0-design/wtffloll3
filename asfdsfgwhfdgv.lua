@@ -1292,8 +1292,11 @@ local function mountInputBuffer()
         {key=0x47,name="G"},{key=0x01,mouse=1,name="M1"},{key=0x02,mouse=2,name="M2"}
     }
     local function readDown(input)
-        if type(iskeypressed)~="function" then return nil end
-        local ok,down=pcall(iskeypressed,input.key)
+        local reader=input.mouse==1 and ismouse1pressed or input.mouse==2 and ismouse2pressed
+        local ok,down
+        if type(reader)=="function" then ok,down=pcall(reader)
+        elseif type(iskeypressed)=="function" then ok,down=pcall(iskeypressed,input.key)
+        else return nil end
         if not ok or type(down)~="boolean" then return nil end
         return down
     end
@@ -1349,11 +1352,17 @@ local function mountInputBuffer()
         local function send(fn,key)
             local result
             if key then result=fn(key) else result=fn() end
-            if result==false then error("Input API rejected event") end
+            assert(result~=false,"Input API rejected event")
         end
         if input.mouse==1 then send(mouse1release);send(mouse1press)
         elseif input.mouse==2 then send(mouse2release);send(mouse2press)
         else send(keyrelease,input.key);send(keypress,input.key) end
+        -- A repeated input is a complete tap. Leaving the injected DOWN set
+        -- feeds our own output into the next held-state sample and can latch
+        -- forever if the physical release lands just before the next press.
+        local released=releaseOwnedInput(input.key)
+        assert(released,"Buffered input release failed")
+        state.owned=false
     end
     local lastUpdate
     local function updateBuffer(now)
