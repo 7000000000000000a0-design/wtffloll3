@@ -428,6 +428,13 @@ source = source:gsub("local hit, down = key%(el.Value%)", "local hit, down = key
 source = source:gsub("local function picture%(key, data, x, y, w, h, z%)", "local function picture(key, data, x, y, w, h, z, alpha)", 1)
 source = source:gsub('put%(o, c, "ZIndex", z or 4%) put%(o, c, "Transparency", Fade%)', 'put(o, c, "ZIndex", z or 4) put(o, c, "Transparency", (alpha or 1) * Fade)', 1)
 source = source:gsub("        rect%(x, y, w, h, C.bg, 1, 10%)", "        rect(x, y, w, h, C.bg, 1, 10)\n        drawBackground(x + SIDEBAR, y, w - SIDEBAR, h)", 1)
+-- Toggles are session-only. Keep persistence for sliders, binds and colours.
+local toggleLoadChanges,toggleSaveChanges
+source,toggleLoadChanges=source:gsub('if el.Flag and saved%[el.Flag%] ~= nil then',
+    'if el.Kind ~= "Toggle" and el.Flag and saved[el.Flag] ~= nil then',1)
+source,toggleSaveChanges=source:gsub('data%[flag%] = v',
+    'if el.Kind ~= "Toggle" then data[flag] = v end',1)
+assert(toggleLoadChanges==1 and toggleSaveChanges==1,"Nova toggle persistence layout changed")
 local previousNova,previousDrawings=_G.Nova,_G.ABATimingOwnedDrawings
 _G.ABATimingOwnedDrawings=ownedDrawings
 _G.Nova=nil
@@ -627,7 +634,7 @@ local players=startupPlayers
 local world=startupWorld
 -- Shared whitelist: stable account IDs, plus a username fallback for runtimes
 -- which do not expose UserId. All player-aware features consult this service.
-local playerWhitelist=type(_G.ABAPlayerWhitelist)=="table" and _G.ABAPlayerWhitelist or {}
+local playerWhitelist={}
 _G.ABAPlayerWhitelist=playerWhitelist
 local rosterPlayers={}
 local nextServiceRefresh=0
