@@ -592,8 +592,7 @@ local destroyPlayerESP
 local destroyPlayersTab
 local releaseMacroInputs
 local macroBusy=false
-local nanamiActive=false
-local nanamiInputAllowed,destroyNanamiTiming,nanamiStatus
+local nanamiStatus
 local destroyInputBuffer,suspendInputBuffer
 local destroyBlockWatcher,blockDetectionHeld,blockDetectionClaimsKey
 
@@ -604,7 +603,7 @@ local function message(text)
     end
 end
 tab:Toggle({Name="Auto Nanami", Default=false, Callback=function(on)
-    enabled=on; prompts={}; clicked=false;nanamiActive=false
+    enabled=on; prompts={}; clicked=false
     message(on and "Waiting for your Nanami move..." or "Auto Nanami: OFF")
 end})
 nanamiStatus=tab:Paragraph({Name="Nanami status",Content="Off"})
@@ -612,8 +611,7 @@ nanamiStatus=tab:Paragraph({Name="Nanami status",Content="Off"})
 state = {}
 function state.Destroy()
     if not alive then return end
-    alive=false; enabled=false;nanamiActive=false
-    if destroyNanamiTiming then pcall(destroyNanamiTiming) end
+    alive=false; enabled=false
     if destroyBlockWatcher then pcall(destroyBlockWatcher) end
     if releaseMacroInputs then pcall(releaseMacroInputs) end
     if destroyInputBuffer then pcall(destroyInputBuffer) end
@@ -769,6 +767,9 @@ local function mountPlayersTab()
     end
 end
 destroyPlayersTab=mountPlayersTab()
+
+local armedUntil=0
+local lastKeys={}
 
 local positionOffset,guiSizeOffset,visualEngineOffset,viewMatrixOffset,renderDimensionsOffset,partPrimitiveOffset,primitivePositionOffset
 -- Matcha's screen coordinates can be unreliable on rotated BillboardGui bars.
@@ -1039,7 +1040,6 @@ local function updateOtherTimings()
 end
 local function child(parent,name) return parent and parent:FindFirstChild(name) end
 local function barsIn(model, results)
-    if isWhitelistedObject(model) then return end
     local root=child(model,"HumanoidRootPart")
     if not root then return end
     for _,gui in ipairs(root:GetChildren()) do
@@ -1050,102 +1050,67 @@ local function barsIn(model, results)
         end
     end
 end
-local function nanamiAiming(character)
-    if not character then return false end
-    local ok,value=pcall(function() return character:GetAttribute("NANAMIAIM") end)
-    if ok and type(value)=="boolean" then return value end
-    ok,value=pcall(function()
-        local marker=character:FindFirstChild("NANAMIAIM")
-        return marker and marker.Value
-    end)
-    return ok and value==true
-end
 local function locate(character)
     local results={}
-    if not nanamiAiming(character) then return results end
     barsIn(character,results)
     local live=child(world,"Live")
     if live then
         for _,model in ipairs(live:GetChildren()) do
-            if model~=character then pcall(barsIn,model,results) end
+            if model ~= character then barsIn(model,results) end
         end
     end
     return results
 end
-local nanamiCandidates,nanamiCharacter,nextNanamiScan={},nil,0
 local function update()
-    if not enabled or not alive then nanamiActive=false;return end
+    if not enabled or not alive then return end
+    if type(mouse1click) ~= "function" then message("This runner has no mouse1click API."); return end
     local player=players.LocalPlayer
     local character=player and player.Character
-    if not nanamiAiming(character) then
-        nanamiActive=false;prompts={};nanamiCandidates={};nextNanamiScan=0
-        message("Waiting for your Nanami move...");return
-    end
-    local allowed=nanamiInputAllowed and nanamiInputAllowed()
-    if not allowed or whitelistBlocksInput() then
-        nanamiActive=false;prompts={};nanamiCandidates={};nextNanamiScan=0
-        message("Paused: menu, focus, macro or whitelist");return
-    end
-    if type(mouse1click)~="function" then nanamiActive=false;message("Mouse click API unavailable");return end
-    local starting=not nanamiActive
-    nanamiActive=true
-    if starting and suspendInputBuffer then suspendInputBuffer() end
+    -- Some builds do not expose NANAMIAIM; arm only from the local move keys.
     local now=tick and tick() or os.clock()
-    if character~=nanamiCharacter then
-        nanamiCharacter=character;prompts={};nanamiCandidates={};nextNanamiScan=0
-    end
-    if now>=nextNanamiScan then
-        local ok,candidates=pcall(locate,character)
-        nextNanamiScan=now+.03
-        if ok then
-            nanamiCandidates=candidates
-            local seen={}
-            for _,candidate in ipairs(candidates) do seen[candidate.gui.Address or candidate.gui]=true end
-            for key in pairs(prompts) do if not seen[key] then prompts[key]=nil end end
-        else nanamiCandidates={};prompts={};message("Retrying ratio bar discovery") end
-    end
-    if #nanamiCandidates==0 then message("Waiting for the game's ratio bar...");return end
-    for _,candidate in ipairs(nanamiCandidates) do
-        local gui,bar,cutter=candidate.gui,candidate.bar,candidate.cutter
-        local valid=pcall(function()
-            assert(gui.Parent~=nil and gui:FindFirstChild("MainBar")==bar
-                and bar:FindFirstChild("Cutter")==cutter,"Ratio bar expired")
-        end)
-        local readable,ratio,method=pcall(readRatio,bar,cutter)
-        if valid and readable and type(ratio)=="number" and ratio==ratio and ratio>=0 and ratio<=1 then
-            local key=gui.Address or gui
-            local prompt=prompts[key]
-            if not prompt then prompt={};prompts[key]=prompt end
-            if prompt.last and ratio<prompt.last-.03 then
-                prompt={};prompts[key]=prompt
-            end
-            if not prompt.last or math.abs(ratio-prompt.last)>.000001 then
-                prompt.previous=prompt.last;prompt.last=ratio;prompt.changedAt=now
-            end
-            -- NanamiCheck sets u2 from the previous simulation ratio BEFORE
-            -- writing the next visible cutter position. Never click on the
-            -- first sample entering the band: it can still have u2=false.
-            local previous=prompt.previous
-            local previousSafe=previous and previous>.681 and previous<.719
-            local currentSafe=ratio>=.694 and ratio<=.716
-            local forward=previous and ratio>=previous and ratio-previous<=.03
-            if not prompt.fired and previousSafe and currentSafe and forward
-                and now-(prompt.changedAt or now)<=.1 and now>=(prompt.retryAt or 0) then
-                if not nanamiAiming(character) or not nanamiInputAllowed() then nanamiActive=false;return end
-                local ok,result=pcall(mouse1click)
-                if ok and result~=false then
-                    prompt.fired=true;lastNanamiClick=now
-                    message("Timing click sent at "..string.format("%.1f%%",ratio*100))
-                else
-                    prompt.retryAt=now+.005
-                    message("Click failed; retrying only inside the valid band")
-                end
-                return
-            elseif not prompt.fired then
-                message("Tracking ratio: "..tostring(math.floor(ratio*100+.5)).."%")
-            end
+    if type(iskeypressed)=="function" then
+        for key=0x31,0x34 do
+            local down=iskeypressed(key)==true
+            if down and not lastKeys[key] then armedUntil=now+5 end
+            lastKeys[key]=down
         end
     end
+    local aiming=character and character:GetAttribute("NANAMIAIM")
+    if not character or (not aiming and now>armedUntil) then
+        prompts={}; message("Waiting for your Nanami move..."); return
+    end
+    local candidates=locate(character)
+    local seen={}
+    local sent=false
+    if #candidates == 0 then message("Waiting for the game's ratio bar...") end
+    for _,candidate in ipairs(candidates) do
+        local gui,bar,cutter=candidate.gui,candidate.bar,candidate.cutter
+        local key=gui.Address or gui
+        seen[key]=true
+        local prompt=prompts[key] or {fired=false}
+        prompts[key]=prompt
+        local ratio,method=readRatio(bar,cutter)
+        if ratio then
+            if ratio == ratio and ratio >= -.1 and ratio <= 1.1 then
+                -- A reused GUI can contain multiple timing rounds within one move.
+                if prompt.last and prompt.last >= .65 and ratio < .3 then prompt.fired=false end
+                prompt.last=ratio
+                if not prompt.fired then
+                    if math.abs(ratio-.7) < .018 and not sent then
+                        mouse1click(); prompt.fired=true; sent=true
+                        lastNanamiClick=tick and tick() or os.clock()
+                        print("[Nanami Timing v3] Click at "..tostring(ratio).." via "..method)
+                        message("Timing click sent; watching for the next prompt...")
+                    elseif ratio <= .72 then
+                        message("Tracking: "..tostring(math.floor(ratio*100+.5)).."%")
+                    end
+                end
+            end
+        else
+            message("Ratio bar screen coordinates unavailable.")
+        end
+    end
+    for key in pairs(prompts) do if not seen[key] then prompts[key]=nil end end
 end
 
 -- Lua equivalent of x.ahk. All key codes below are Windows virtual-key codes.
@@ -1192,11 +1157,10 @@ local function robloxTextFocused()
     if chatOK and chatFocused == false then return false end
 end
 
-local function macroInputAllowed(forBlockDetection,forNanami)
+local function macroInputAllowed(forBlockDetection)
     -- Reserve the held detection key for this feature. In particular, default C
     -- must not also run Aizen's 2 > 2 macro while block detection is armed.
     if not forBlockDetection and blockDetectionHeld and blockDetectionHeld() then return false end
-    if nanamiActive and not forNanami then return false end
     if whitelistBlocksInput() then return false end
     if not robloxFocused() then return false end
     local menuOK,menuOpen=pcall(function() return window:IsOpen() end)
@@ -1212,8 +1176,6 @@ local function macroInputAllowed(forBlockDetection,forNanami)
     if iskeypressed(0x0D) or iskeypressed(0x1B) then chatFromShortcut = false end
     return not chatFromShortcut
 end
-
-nanamiInputAllowed=function() return not macroBusy and macroInputAllowed(false,true) end
 
 local function macroReady()
     if releaseMacroInputs then releaseMacroInputs() end
@@ -1952,37 +1914,16 @@ connection=connectFrame("Heartbeat",function()
     if not alive then return end
     local inputOK, acceptsInput = pcall(macroInputAllowed)
     if not inputOK or not acceptsInput then return end
+    local ok,err=pcall(update)
+    if not ok then
+        message("Tracking unavailable; see Matcha output.")
+        if tostring(err) ~= lastError then lastError=tostring(err); print("[Nanami Timing] "..lastError) end
+    end
     local otherOK,otherError=pcall(updateOtherTimings)
     if not otherOK and tostring(otherError)~=lastError then
         lastError=tostring(otherError);print("[ABA Timings] "..lastError)
     end
 end)
-local function mountNanamiTiming()
-    local stopped=false
-    local function poll()
-        if stopped or not alive then nanamiActive=false;return end
-        local ok,err=pcall(update)
-        if not ok then
-            nanamiActive=false;nanamiCandidates={};prompts={};nextNanamiScan=0
-            if tostring(err)~=lastError then lastError=tostring(err);print("[Nanami] "..lastError) end
-            message("Retrying Nanami timing read")
-        end
-    end
-    local fallback
-    if task and type(task.spawn)=="function" and type(task.wait)=="function" then
-        task.spawn(function()
-            while alive and not stopped do
-                poll();task.wait(enabled and .001 or .05)
-            end
-        end)
-    else fallback=connectFrame("Heartbeat",poll) end
-    return function()
-        stopped=true;nanamiActive=false;nanamiCandidates={};prompts={}
-        if fallback then pcall(function() fallback:Disconnect() end) end
-    end
-end
-destroyNanamiTiming=mountNanamiTiming()
-
 -- Capture camera orientation once; use the runner's native projection for drawing.
 local rendererProjectionActive=false
 local function screenProjection(camera,nativeESP)
