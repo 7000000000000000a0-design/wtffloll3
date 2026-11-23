@@ -429,6 +429,10 @@ source = source:gsub("local function picture%(key, data, x, y, w, h, z%)", "loca
 source = source:gsub('put%(o, c, "ZIndex", z or 4%) put%(o, c, "Transparency", Fade%)', 'put(o, c, "ZIndex", z or 4) put(o, c, "Transparency", (alpha or 1) * Fade)', 1)
 source = source:gsub("        rect%(x, y, w, h, C.bg, 1, 10%)", "        rect(x, y, w, h, C.bg, 1, 10)\n        drawBackground(x + SIDEBAR, y, w - SIDEBAR, h)", 1)
 -- Toggles are session-only. Keep persistence for sliders, binds and colours.
+source=source:gsub('local hint = keyLabel%(toggleVK%) %.%. " hides"','',1)
+local footerChanges
+source,footerChanges=source:gsub('text%(fitText%(hint, SIDEBAR %- 28, 12%), x %+ 16, y %+ h %- 26, C.faint, 12, 5%)','',1)
+assert(footerChanges==1,"Nova footer layout changed")
 local toggleLoadChanges,toggleSaveChanges
 source,toggleLoadChanges=source:gsub('if el.Flag and saved%[el.Flag%] ~= nil then',
     'if el.Kind ~= "Toggle" and el.Flag and saved[el.Flag] ~= nil then',1)
@@ -592,21 +596,18 @@ local destroyPlayerESP
 local destroyPlayersTab
 local releaseMacroInputs
 local macroBusy=false
-local nanamiStatus
 local destroyInputBuffer,suspendInputBuffer
 local destroyBlockWatcher,blockDetectionHeld,blockDetectionClaimsKey
 
 local function message(text)
     if text~=lastStatus then
         lastStatus=text
-        if nanamiStatus then pcall(function() nanamiStatus:Set(text) end) end
     end
 end
 tab:Toggle({Name="Auto Nanami", Default=false, Callback=function(on)
     enabled=on; prompts={}; clicked=false
     message(on and "Waiting for your Nanami move..." or "Auto Nanami: OFF")
 end})
-nanamiStatus=tab:Paragraph({Name="Nanami status",Content="Off"})
 
 state = {}
 function state.Destroy()
