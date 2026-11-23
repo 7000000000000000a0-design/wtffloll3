@@ -79,7 +79,6 @@ do
 end
 if _G.ABAStartupToken~=startupToken then return end
 _G.ABAStartupToken=nil
-if old and old.Destroy then pcall(old.Destroy) end
 local memoryLayoutCache={}
 local function compatibleMemoryLayout()
     if type(getbase)~="function" or type(memory_read)~="function" then return false end
@@ -381,7 +380,6 @@ local function clearOwnedDrawings()
     end
 end
 -- Track only objects created by this copy of Nova, without replacing global Drawing.
-_G.ABATimingOwnedDrawings=ownedDrawings
 -- Matcha may not run short-lived spawned button callbacks reliably.
 source=source:gsub("task%.spawn%(callback, el%)","callback(el)")
 -- A button can unload during frame(); remove anything drawn later in that frame.
@@ -430,18 +428,33 @@ source = source:gsub("local hit, down = key%(el.Value%)", "local hit, down = key
 source = source:gsub("local function picture%(key, data, x, y, w, h, z%)", "local function picture(key, data, x, y, w, h, z, alpha)", 1)
 source = source:gsub('put%(o, c, "ZIndex", z or 4%) put%(o, c, "Transparency", Fade%)', 'put(o, c, "ZIndex", z or 4) put(o, c, "Transparency", (alpha or 1) * Fade)', 1)
 source = source:gsub("        rect%(x, y, w, h, C.bg, 1, 10%)", "        rect(x, y, w, h, C.bg, 1, 10)\n        drawBackground(x + SIDEBAR, y, w - SIDEBAR, h)", 1)
-local library = loadstring(source)()
-local Nova = library or _G.Nova
-assert(Nova and Nova.CreateWindow, "Nova menu library did not load")
+local previousNova,previousDrawings=_G.Nova,_G.ABATimingOwnedDrawings
+_G.ABATimingOwnedDrawings=ownedDrawings
+_G.Nova=nil
+local loaded,library=pcall(function() return loadstring(source)() end)
+local Nova=loaded and (library or _G.Nova) or nil
+if not Nova or type(Nova.CreateWindow)~="function" then
+    _G.Nova=previousNova;_G.ABATimingOwnedDrawings=previousDrawings
+    clearOwnedDrawings()
+    error("Nova menu library did not load; existing menu was preserved")
+end
+_G.ABATimingOwnedDrawings=ownedDrawings
+_G.Nova=Nova
 local colorWheelImage
 pcall(function()
     local wheelURL="https://raw.githubusercontent.com/7000000000000000a0-design/wtffloll3/main/assets/color-wheel.png"
     if type(httpget)=="function" then colorWheelImage=httpget(wheelURL)else colorWheelImage=game:HttpGet(wheelURL)end
 end)
 local state
-local window = Nova:CreateWindow({Title="hahahahahaha", ColorWheelImage=colorWheelImage, Folder="hahahahahaha", ConfigName="menu-colors", ToggleKey="RightShift", Open=true, Size={480,380}, OnUnload=function()
+local windowOK,window=pcall(function() return Nova:CreateWindow({Title="hahahahahaha", ColorWheelImage=colorWheelImage, Folder="hahahahahaha", ConfigName="menu-colors", ToggleKey="RightShift", Open=false, Size={480,380}, OnUnload=function()
     if state then state.Destroy() end
-end})
+end}) end)
+if not windowOK or not window then
+    _G.Nova=previousNova;_G.ABATimingOwnedDrawings=previousDrawings
+    clearOwnedDrawings();error("Menu construction failed; existing menu was preserved")
+end
+if old and old.Destroy then pcall(old.Destroy) end
+pcall(function() window:Toggle(true) end)
 if window.SettingsTab and window.SettingsTab.elements then
     local rows=window.SettingsTab.elements
     for i=#rows,1,-1 do
@@ -459,12 +472,58 @@ local tab = window:Tab("Timings")
 local enabled, alive, clicked = false, true, false
 -- Matcha builds may omit RunService signals. Keep each subscription owned
 -- by this script and fall back to a cancellable task loop when necessary.
+local inputOwnerToken={}
+local releaseHub=_G.ABAInputReleaseHub
+if type(releaseHub)~="table" or type(releaseHub.owners)~="table" or type(releaseHub.pending)~="table" then
+    releaseHub={owners={},pending={}};_G.ABAInputReleaseHub=releaseHub
+end
+local function tryPhysicalRelease(key)
+    local fn
+    if key==1 then fn=mouse1release elseif key==2 then fn=mouse2release else fn=keyrelease end
+    if type(fn)~="function" then return false end
+    local ok,result
+    if key==1 or key==2 then ok,result=pcall(fn) else ok,result=pcall(fn,key) end
+    return ok and result~=false
+end
+local function drainPendingReleases()
+    for key,owner in pairs(releaseHub.pending) do
+        if releaseHub.owners[key]~=owner then releaseHub.pending[key]=nil
+        elseif tryPhysicalRelease(key) then
+            releaseHub.pending[key]=nil;releaseHub.owners[key]=nil
+        end
+    end
+end
+local function startReleaseWorker()
+    if releaseHub.running then return end
+    local spawnFn=task and task.spawn or spawn
+    local waitFn=task and task.wait or wait
+    if type(spawnFn)~="function" or type(waitFn)~="function" then return end
+    releaseHub.running=true
+    local started=pcall(spawnFn,function()
+        while next(releaseHub.pending)~=nil do
+            waitFn(.05);drainPendingReleases()
+        end
+        releaseHub.running=false
+    end)
+    if not started then releaseHub.running=false end
+end
+local function claimInput(key)
+    releaseHub.owners[key]=inputOwnerToken;releaseHub.pending[key]=nil
+end
+local function releaseOwnedInput(key)
+    if releaseHub.owners[key]~=inputOwnerToken then return true end
+    if tryPhysicalRelease(key) then
+        releaseHub.pending[key]=nil;releaseHub.owners[key]=nil;return true
+    end
+    releaseHub.pending[key]=inputOwnerToken;startReleaseWorker();return false
+end
 local refreshServices
 local function connectFrame(signalName,callback,interval)
     interval=interval or 1/60
     local stopped,lastError=false,nil
     local function dispatch(dt)
         if stopped or not alive then return end
+        drainPendingReleases()
         if refreshServices then pcall(refreshServices) end
         local ok,err=pcall(callback,dt)
         if not ok and tostring(err)~=lastError then
@@ -485,6 +544,8 @@ local function connectFrame(signalName,callback,interval)
                 local previous=lastSignal
                 while alive and not stopped do
                     task.wait(interval)
+                    if stopped or not alive then break end
+                    drainPendingReleases()
                     local now=tick and tick() or os.clock()
                     if now-lastSignal>.1 then
                         if refreshServices then pcall(refreshServices) end
@@ -523,6 +584,7 @@ local destroyMahoragaCounter
 local destroyPlayerESP
 local destroyPlayersTab
 local releaseMacroInputs
+local macroBusy=false
 local destroyInputBuffer,suspendInputBuffer
 local destroyBlockWatcher,blockDetectionHeld,blockDetectionClaimsKey
 
@@ -553,11 +615,7 @@ function state.Destroy()
     -- Also catch any final objects created by a menu frame already in progress.
     if task and type(task.spawn)=="function" then
         task.spawn(function()
-            for _=1,20 do
-                task.wait(.05)
-                if releaseMacroInputs then pcall(releaseMacroInputs) end
-                clearOwnedDrawings()
-            end
+            for _=1,3 do task.wait();clearOwnedDrawings() end
         end)
     end
     if _G.NanamiTimingMatcha == state then _G.NanamiTimingMatcha=nil end
@@ -796,6 +854,28 @@ local function newCameraTimingDetector()
 end
 local detectCameraTiming=newCameraTimingDetector()
 
+local function newBlackFlashDetector()
+    local state
+    return function(camera,fov,character,skill,now)
+        if not camera or not character or not skill or skill==false or skill==0 or skill==""
+            or type(fov)~="number" or fov~=fov then state=nil;return false end
+        if not state or state.camera~=camera or state.character~=character or state.skill~=skill
+            or now-state.seen>.25 or now<state.seen then
+            state={camera=camera,character=character,skill=skill,last=fov,minimum=fov,seen=now}
+            return false
+        end
+        local previous=state.last
+        state.last=fov;state.seen=now;state.minimum=math.min(state.minimum,fov)
+        if previous>=50 and fov<previous then state.started=true end
+        if not state.fired and state.started and state.minimum>=5.5 and state.minimum<=6.5
+            and fov>previous+.001 and fov<69.5 then
+            state.fired=true;return true
+        end
+        if fov>=69.5 and state.started then state=nil end
+        return false
+    end
+end
+local detectBlackFlash=newBlackFlashDetector()
 local m1Cooldown,quietAfterNanami=.2,.6
 local lastProfileClick=-math.huge
 
@@ -866,6 +946,7 @@ end
 -- Shared camera detector, including GT Goku animation-specific zoom cues.
 flashTab:Toggle({Name="Camera Timings",Flag="auto_camera_timings_all",Default=false,Callback=function(on)
     cameraTimingsOn=on
+    detectBlackFlash=newBlackFlashDetector()
     detectCameraTiming=newCameraTimingDetector()
     gtTrackStates=setmetatable({}, {__mode="k"})
     flash={last=nil,minimum=math.huge,descending=false,fired=false}
@@ -890,7 +971,7 @@ local function localX(obj)
     end
 end
 local function updateOtherTimings()
-    if not alive or whitelistBlocksInput() then return end
+    if not alive or macroBusy or whitelistBlocksInput() then return end
     local now=tick and tick() or os.clock()
     if cameraTimingsOn then
         local cam=world.CurrentCamera
@@ -899,11 +980,21 @@ local function updateOtherTimings()
             -- Timeline profiles own their cues; never double-click from FOV motion.
             detectCameraTiming=newCameraTimingDetector()
         else
-            -- Camera motion by itself is not a confirmed input cue.
-            detectCameraTiming=newCameraTimingDetector()
+            local player=players.LocalPlayer
+            local character=player and player.Character
+            local skill
+            pcall(function()
+                local marker=character and character:FindFirstChild("UsingSkill")
+                skill=marker and marker.Value
+            end)
+            if detectBlackFlash(cam,fov,character,skill,now) and now-lastProfileClick>=m1Cooldown
+                and now-lastNanamiClick>=quietAfterNanami and type(mouse1click)=="function" then
+                if suspendInputBuffer then suspendInputBuffer() end
+                mouse1click();lastProfileClick=now
+            end
         end
     else
-        detectCameraTiming=newCameraTimingDetector()
+        detectCameraTiming=newCameraTimingDetector();detectBlackFlash=newBlackFlashDetector()
     end
     if kokuOn then
         local player=players.LocalPlayer
@@ -950,7 +1041,16 @@ local function barsIn(model, results)
 end
 local function locate(character)
     local results={}
+    local aiming
+    pcall(function() aiming=character and character:GetAttribute("NANAMIAIM") end)
+    if aiming~=true then return results end
     barsIn(character,results)
+    local live=child(world,"Live")
+    if live then
+        for _,model in ipairs(live:GetChildren()) do
+            if model~=character then barsIn(model,results) end
+        end
+    end
     return results
 end
 local function update()
@@ -1013,17 +1113,14 @@ local aizenOn=false
 local aizenToggle,gojoToggle,dioToggle,yusukeToggle
 local dioOn=false
 local yusukeOn=false
-local macroBusy=false
 local macroHeldKeys={}
 local macroMouseHeld=false
 releaseMacroInputs=function()
     for key in pairs(macroHeldKeys) do
-        local ok=type(keyrelease)=="function" and pcall(keyrelease,key)
+        local ok=releaseOwnedInput(key)
         if ok then macroHeldKeys[key]=nil end
     end
-    if macroMouseHeld and type(mouse1release)=="function" then
-        if pcall(mouse1release) then macroMouseHeld=false end
-    end
+    if macroMouseHeld and releaseOwnedInput(1) then macroMouseHeld=false end
 end
 local macroError
 local macroBindings={
@@ -1170,10 +1267,11 @@ macrosTab:Keybind({Name="Toggle Macros",Default="F2",Flag="macro_toggle_key",Mod
     end
 end})
 local function macroTap(vk)
-    macroHeldKeys[vk]=true
-    keypress(vk)
-    keyrelease(vk)
+    macroHeldKeys[vk]=true;claimInput(vk)
+    local result=keypress(vk)
+    if not releaseOwnedInput(vk) then return end
     macroHeldKeys[vk]=nil
+    if result==false then error("Keypress API rejected input") end
 end
 local function mountInputBuffer()
     local page=window:Tab("Input Buffer")
@@ -1193,14 +1291,8 @@ local function mountInputBuffer()
         return down
     end
     local function releaseInput(input)
-        if macroBusy and (input.mouse or macroHeldKeys[input.key]) then return true end
-        local release
-        if input.mouse==1 then release=mouse1release
-        elseif input.mouse==2 then release=mouse2release
-        else release=keyrelease end
-        if type(release)~="function" then return false end
-        if input.mouse then return pcall(release) end
-        return pcall(release,input.key)
+        if macroBusy and ((input.mouse==1 and macroMouseHeld) or macroHeldKeys[input.key]) then return true end
+        return releaseOwnedInput(input.key)
     end
     local function clearInput(input,requireRelease)
         local state=held[input.key]
@@ -1246,10 +1338,15 @@ local function mountInputBuffer()
         return type(keyrelease)=="function" and type(keypress)=="function"
     end
     local function repeatInput(input,state)
-        state.owned=true
-        if input.mouse==1 then mouse1release();mouse1press()
-        elseif input.mouse==2 then mouse2release();mouse2press()
-        else keyrelease(input.key);keypress(input.key) end
+        state.owned=true;claimInput(input.key)
+        local function send(fn,key)
+            local result
+            if key then result=fn(key) else result=fn() end
+            if result==false then error("Input API rejected event") end
+        end
+        if input.mouse==1 then send(mouse1release);send(mouse1press)
+        elseif input.mouse==2 then send(mouse2release);send(mouse2press)
+        else send(keyrelease,input.key);send(keypress,input.key) end
     end
     local lastUpdate
     local function updateBuffer(now)
@@ -1321,14 +1418,6 @@ local function mountInputBuffer()
     else fallback=connectFrame("Heartbeat",poll) end
     return function()
         stopped=true;releaseAll()
-        if task and type(task.spawn)=="function" and type(task.wait)=="function" then
-            task.spawn(function()
-                for _=1,20 do
-                    if next(held)==nil then break end
-                    task.wait(.05);releaseAll()
-                end
-            end)
-        end
         if fallback then pcall(function() fallback:Disconnect() end) end
     end,releaseAll
 end
@@ -1365,7 +1454,7 @@ local function mountBlockWatcher()
         if not heldKey then return end
         local key=heldKey
         heldKey=nil;releaseAt=nil
-        local released=type(keyrelease)=="function" and pcall(keyrelease,key)
+        local released=releaseOwnedInput(key)
         if released then macroHeldKeys[key]=nil end
         macroBusy=false
     end
@@ -1606,17 +1695,18 @@ local function mountBlockWatcher()
             previousBlocking=finalBlocking;openingAt=nil
             message("Target re-blocked before dispatch");return
         end
+        if context.nextAttemptAt and dispatchTime<context.nextAttemptAt then return end
         if suspendInputBuffer then suspendInputBuffer() end
         macroBusy=true
         local key=0x30+slot
-        heldKey=key;releaseAt=dispatchTime+.020;macroHeldKeys[key]=true
-        local ok,err=pcall(keypress,key)
-        if ok then
+        heldKey=key;releaseAt=dispatchTime+.020;macroHeldKeys[key]=true;claimInput(key)
+        local ok,result=pcall(keypress,key)
+        if ok and result~=false then
             fired=true;openingAt=nil;context.sentAt=dispatchTime;context.confirmed=false
             message("Sent move "..tostring(slot).." on unblock · awaiting game response")
         else
-            resetWatch()
-            message("Input failed; waiting for another block: "..tostring(err))
+            releaseMoveKey();context.nextAttemptAt=dispatchTime+.020
+            message("Input rejected; retrying while the opening is fresh: "..tostring(result))
         end
     end
     local function poll()
@@ -1772,10 +1862,10 @@ local function runUptiltMacro(profile, isSelected)
         local function active() return alive and macrosOn and isSelected() and macroInputAllowed() end
         local ok,err=pcall(function()
             if not active() then return end
-            mouseHeld=true;macroMouseHeld=true;mouse1press()
+            mouseHeld=true;macroMouseHeld=true;claimInput(1);mouse1press()
             task.wait(.230)
             if not active() then return end
-            spaceHeld=true;macroHeldKeys[0x20]=true;keypress(0x20)
+            spaceHeld=true;macroHeldKeys[0x20]=true;claimInput(0x20);keypress(0x20)
             task.wait(.210)
             if not active() then return end
             macroTap(0x33)
@@ -4070,6 +4160,7 @@ local function mountPlayerESP()
                 latestPlayerList=list
                 local present={}
                 local me=playerKey(players.LocalPlayer)
+                local batchStarted=tick and tick() or os.clock()
                 for _,player in ipairs(list) do
                     if stopped or not alive then return end
                     local identity=playerKey(player)
@@ -4082,9 +4173,11 @@ local function mountPlayerESP()
                         if success then preparedPlayers[identity]=sample
                         else preparedPlayers[identity]=nil;reportPlayerError(record,player,sample) end
                     end
-                    -- Let the draw callback run between players, instead of
-                    -- blocking a whole frame with roster/tag/cooldown scans.
-                    task.wait()
+                    local batchNow=tick and tick() or os.clock()
+                    if batchNow-batchStarted>=.003 then
+                        task.wait()
+                        batchStarted=tick and tick() or os.clock()
+                    end
                 end
                 local removed={}
                 for identity in pairs(records) do
