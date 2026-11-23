@@ -80,6 +80,26 @@ end
 if _G.ABAStartupToken~=startupToken then return end
 _G.ABAStartupToken=nil
 if old and old.Destroy then pcall(old.Destroy) end
+local memoryLayoutCache={}
+local function compatibleMemoryLayout()
+    if type(getbase)~="function" or type(memory_read)~="function" then return false end
+    local ok,valid=pcall(function()
+        local base=getbase()
+        if type(base)~="number" or base<4096 then return false end
+        local now=tick and tick() or os.clock()
+        if memoryLayoutCache.base==base and now<(memoryLayoutCache.nextCheck or 0) then return memoryLayoutCache.valid end
+        memoryLayoutCache={base=base,nextCheck=now+.5,valid=false}
+        if memory_read("int",base)%65536~=0x5A4D then return false end
+        local pe=memory_read("int",base+0x3C)
+        if type(pe)~="number" or pe<64 or pe>4096 then return false end
+        if memory_read("int",base+pe)~=0x4550 then return false end
+        local valid=memory_read("int",base+pe+8)==1327875843
+            and memory_read("int",base+pe+24+56)==154566656
+        memoryLayoutCache.valid=valid
+        return valid
+    end)
+    return ok and valid==true
+end
 local url = "https://raw.githubusercontent.com/Martinikaws/Nova/88f5bd44551d03d6a01ba07b761519eb3d8ccb34/Nova.lua"
 local source
 if type(httpget) == "function" then source = httpget(url) else source = game:HttpGet(url) end
@@ -439,11 +459,13 @@ local tab = window:Tab("Timings")
 local enabled, alive, clicked = false, true, false
 -- Matcha builds may omit RunService signals. Keep each subscription owned
 -- by this script and fall back to a cancellable task loop when necessary.
+local refreshServices
 local function connectFrame(signalName,callback,interval)
     interval=interval or 1/60
     local stopped,lastError=false,nil
     local function dispatch(dt)
         if stopped or not alive then return end
+        if refreshServices then pcall(refreshServices) end
         local ok,err=pcall(callback,dt)
         if not ok and tostring(err)~=lastError then
             lastError=tostring(err);print("[Update loop] "..lastError)
@@ -455,6 +477,24 @@ local function connectFrame(signalName,callback,interval)
         if signal then return signal:Connect(dispatch) end
     end)
     if ok and connection then
+        local lastSignal=tick and tick() or os.clock()
+        local original=callback
+        callback=function(dt) lastSignal=tick and tick() or os.clock();return original(dt) end
+        if task and type(task.spawn)=="function" and type(task.wait)=="function" then
+            task.spawn(function()
+                local previous=lastSignal
+                while alive and not stopped do
+                    task.wait(interval)
+                    local now=tick and tick() or os.clock()
+                    if now-lastSignal>.1 then
+                        if refreshServices then pcall(refreshServices) end
+                        local success,err=pcall(original,math.max(0,now-previous))
+                        if not success and tostring(err)~=lastError then lastError=tostring(err);print("[Update loop] "..lastError) end
+                    end
+                    previous=now
+                end
+            end)
+        end
         return {Disconnect=function()
             stopped=true;pcall(function() connection:Disconnect() end)
         end}
@@ -482,6 +522,7 @@ local destroyHeadRide
 local destroyMahoragaCounter
 local destroyPlayerESP
 local destroyPlayersTab
+local releaseMacroInputs
 local destroyInputBuffer,suspendInputBuffer
 local destroyBlockWatcher,blockDetectionHeld,blockDetectionClaimsKey
 
@@ -499,6 +540,7 @@ function state.Destroy()
     if not alive then return end
     alive=false; enabled=false
     if destroyBlockWatcher then pcall(destroyBlockWatcher) end
+    if releaseMacroInputs then pcall(releaseMacroInputs) end
     if destroyInputBuffer then pcall(destroyInputBuffer) end
     if destroyPlayersTab then pcall(destroyPlayersTab) end
     if destroyPlayerESP then pcall(destroyPlayerESP) end
@@ -511,7 +553,11 @@ function state.Destroy()
     -- Also catch any final objects created by a menu frame already in progress.
     if task and type(task.spawn)=="function" then
         task.spawn(function()
-            for _=1,3 do task.wait();clearOwnedDrawings() end
+            for _=1,20 do
+                task.wait(.05)
+                if releaseMacroInputs then pcall(releaseMacroInputs) end
+                clearOwnedDrawings()
+            end
         end)
     end
     if _G.NanamiTimingMatcha == state then _G.NanamiTimingMatcha=nil end
@@ -526,6 +572,18 @@ local world=startupWorld
 local playerWhitelist=type(_G.ABAPlayerWhitelist)=="table" and _G.ABAPlayerWhitelist or {}
 _G.ABAPlayerWhitelist=playerWhitelist
 local rosterPlayers={}
+local nextServiceRefresh=0
+refreshServices=function()
+    local now=tick and tick() or os.clock()
+    if now<nextServiceRefresh then return end
+    nextServiceRefresh=now+.75
+    local fresh=resolveService("Players")
+    local localPlayer
+    pcall(function() localPlayer=fresh.LocalPlayer end)
+    if fresh and localPlayer and fresh~=players then players=fresh;rosterPlayers={} end
+    local freshWorld=resolveService("Workspace")
+    if freshWorld then world=freshWorld end
+end
 local function whitelistIdentity(player)
     if not player then return nil end
     local ok,name=pcall(function() return tostring(player.Name) end)
@@ -588,6 +646,7 @@ local function mountPlayersTab()
     local rows={}
     local stopped=false
     local function refreshRoster()
+        refreshServices()
         local ok,list=pcall(function() return players:GetPlayers() end)
         if not ok or type(list)~="table" then return end
         rosterPlayers=list
@@ -839,12 +898,9 @@ local function updateOtherTimings()
         if cam and updateGTCamera(cam,now) then
             -- Timeline profiles own their cues; never double-click from FOV motion.
             detectCameraTiming=newCameraTimingDetector()
-        elseif detectCameraTiming(cam,fov,now) then
-            -- A cue expires on this frame; never send a delayed click into another move.
-            local ready=now-lastProfileClick>=.08 and now-lastNanamiClick>=.08
-            if ready and type(mouse1click)=="function" then
-                mouse1click();lastProfileClick=now
-            end
+        else
+            -- Camera motion by itself is not a confirmed input cue.
+            detectCameraTiming=newCameraTimingDetector()
         end
     else
         detectCameraTiming=newCameraTimingDetector()
@@ -895,12 +951,6 @@ end
 local function locate(character)
     local results={}
     barsIn(character,results)
-    local live=child(world,"Live")
-    if live then
-        for _,model in ipairs(live:GetChildren()) do
-            if model ~= character then barsIn(model,results) end
-        end
-    end
     return results
 end
 local function update()
@@ -965,6 +1015,16 @@ local dioOn=false
 local yusukeOn=false
 local macroBusy=false
 local macroHeldKeys={}
+local macroMouseHeld=false
+releaseMacroInputs=function()
+    for key in pairs(macroHeldKeys) do
+        local ok=type(keyrelease)=="function" and pcall(keyrelease,key)
+        if ok then macroHeldKeys[key]=nil end
+    end
+    if macroMouseHeld and type(mouse1release)=="function" then
+        if pcall(mouse1release) then macroMouseHeld=false end
+    end
+end
 local macroError
 local macroBindings={
     {trigger=0x45,first=0x32,second=0x31,delay=.020},
@@ -998,6 +1058,8 @@ local function macroInputAllowed(forBlockDetection)
     if not forBlockDetection and blockDetectionHeld and blockDetectionHeld() then return false end
     if whitelistBlocksInput() then return false end
     if not robloxFocused() then return false end
+    local menuOK,menuOpen=pcall(function() return window:IsOpen() end)
+    if not menuOK or menuOpen then return false end
     local focused = robloxTextFocused()
     if focused ~= nil then return not focused end
 
@@ -1011,6 +1073,8 @@ local function macroInputAllowed(forBlockDetection)
 end
 
 local function macroReady()
+    if releaseMacroInputs then releaseMacroInputs() end
+    if next(macroHeldKeys)~=nil or macroMouseHeld then return false end
     return type(iskeypressed)=="function" and type(keypress)=="function"
         and type(keyrelease)=="function" and type(isrbxactive)=="function"
         and task and type(task.spawn)=="function" and type(task.wait)=="function"
@@ -1129,20 +1193,25 @@ local function mountInputBuffer()
         return down
     end
     local function releaseInput(input)
-        -- A macro may have taken ownership after the buffer was suspended.
-        if macroBusy and (input.mouse or macroHeldKeys[input.key]) then return end
-        if input.mouse==1 then
-            if type(mouse1release)=="function" then pcall(mouse1release) end
-        elseif input.mouse==2 then
-            if type(mouse2release)=="function" then pcall(mouse2release) end
-        elseif type(keyrelease)=="function" then pcall(keyrelease,input.key) end
+        if macroBusy and (input.mouse or macroHeldKeys[input.key]) then return true end
+        local release
+        if input.mouse==1 then release=mouse1release
+        elseif input.mouse==2 then release=mouse2release
+        else release=keyrelease end
+        if type(release)~="function" then return false end
+        if input.mouse then return pcall(release) end
+        return pcall(release,input.key)
     end
     local function clearInput(input,requireRelease)
         local state=held[input.key]
         local down=readDown(input)
         if requireRelease and (state or down==true or down==nil) then blockedUntilUp[input.key]=true end
-        if state and state.owned then releaseInput(input) end
+        if state and state.owned and not releaseInput(input) then
+            state.pendingRelease=true
+            return false
+        end
         held[input.key]=nil
+        return true
     end
     local function releaseAll()
         for _,input in ipairs(inputs) do clearInput(input,true) end
@@ -1189,6 +1258,10 @@ local function mountInputBuffer()
             lastUpdate=now;releaseAll();message("Clock reset · release held inputs to resume");return
         end
         lastUpdate=now
+        for _,input in ipairs(inputs) do
+            local state=held[input.key]
+            if state and state.pendingRelease then clearInput(input,true) end
+        end
         if stopped or not alive then releaseAll();return end
         if not toggle.Value then releaseAll();message("Off");return end
         if macroBusy then releaseAll();message("Paused during macro");return end
@@ -1209,15 +1282,15 @@ local function mountInputBuffer()
                 clearInput(input,true);missing=true
             elseif down==nil then
                 clearInput(input,true);failed=true
+            elseif held[input.key] and held[input.key].pendingRelease then
+                failed=true
             elseif blockedUntilUp[input.key] then
-                -- Observe a real up sample before resuming after a pause/error.
-                held[input.key]=nil
+                clearInput(input,true)
             else
                 selectedCount=selectedCount+1
                 local state=held[input.key]
                 if not down then
-                    if state and state.owned then releaseInput(input) end
-                    held[input.key]=nil
+                    clearInput(input,false)
                 elseif not state then
                     held[input.key]={nextAt=now+repeatInterval,owned=false}
                 elseif now>=state.nextAt then
@@ -1248,6 +1321,14 @@ local function mountInputBuffer()
     else fallback=connectFrame("Heartbeat",poll) end
     return function()
         stopped=true;releaseAll()
+        if task and type(task.spawn)=="function" and type(task.wait)=="function" then
+            task.spawn(function()
+                for _=1,20 do
+                    if next(held)==nil then break end
+                    task.wait(.05);releaseAll()
+                end
+            end)
+        end
         if fallback then pcall(function() fallback:Disconnect() end) end
     end,releaseAll
 end
@@ -1284,8 +1365,8 @@ local function mountBlockWatcher()
         if not heldKey then return end
         local key=heldKey
         heldKey=nil;releaseAt=nil
-        if type(keyrelease)=="function" then pcall(keyrelease,key) end
-        macroHeldKeys[key]=nil
+        local released=type(keyrelease)=="function" and pcall(keyrelease,key)
+        if released then macroHeldKeys[key]=nil end
         macroBusy=false
     end
     local function resetWatch()
@@ -1486,7 +1567,16 @@ local function mountBlockWatcher()
         if previousBlocking==true then openingAt=now end
         previousBlocking=false
         if heldKey then return end
-        if fired then message("Pressed move "..tostring(slot).." · waiting for another block");return end
+        if fired then
+            if context.skill and not context.confirmed then
+                local ok,value=pcall(function() return context.skill:GetAttribute("COOLDOWN") end)
+                if ok and type(value)=="number" and value>=0 and value<19.999 then context.confirmed=true end
+            end
+            if context.confirmed then message("Move "..tostring(slot).." use confirmed · waiting for another block")
+            elseif now-(context.sentAt or now)>.25 then message("Move "..tostring(slot).." key sent · game use not confirmed")
+            else message("Move "..tostring(slot).." key sent · checking game response") end
+            return
+        end
         if not openingAt then message("Waiting for target to block, then unblock");return end
         if now-openingAt>openingLifetime then
             openingAt=nil;message("Opening passed · waiting for another block");return
@@ -1522,8 +1612,8 @@ local function mountBlockWatcher()
         heldKey=key;releaseAt=dispatchTime+.020;macroHeldKeys[key]=true
         local ok,err=pcall(keypress,key)
         if ok then
-            fired=true;openingAt=nil
-            message("Pressed move "..tostring(slot).." on unblock")
+            fired=true;openingAt=nil;context.sentAt=dispatchTime;context.confirmed=false
+            message("Sent move "..tostring(slot).." on unblock · awaiting game response")
         else
             resetWatch()
             message("Input failed; waiting for another block: "..tostring(err))
@@ -1586,10 +1676,7 @@ local function runMacro(selected)
             task.wait(selected.delay)
             if alive and macrosOn and aizenOn and not gojoOn and macroInputAllowed() then macroTap(selected.second) end
         end)
-        for vk in pairs(macroHeldKeys)do
-            pcall(keyrelease,vk)
-            macroHeldKeys[vk]=nil
-        end
+        releaseMacroInputs()
         macroBusy=false
         if not ok then macroReport(tostring(err)) end
     end)
@@ -1644,10 +1731,7 @@ local function runGojoMacro(selected)
                 if step[2]>0 then task.wait(step[2]) end
             end
         end)
-        for vk in pairs(macroHeldKeys)do
-            pcall(keyrelease,vk)
-            macroHeldKeys[vk]=nil
-        end
+        releaseMacroInputs()
         macroBusy=false
         if not ok then macroReport(tostring(err)) end
     end)
@@ -1688,19 +1772,16 @@ local function runUptiltMacro(profile, isSelected)
         local function active() return alive and macrosOn and isSelected() and macroInputAllowed() end
         local ok,err=pcall(function()
             if not active() then return end
-            mouseHeld=true;mouse1press()
+            mouseHeld=true;macroMouseHeld=true;mouse1press()
             task.wait(.230)
             if not active() then return end
-            spaceHeld=true;keypress(0x20)
+            spaceHeld=true;macroHeldKeys[0x20]=true;keypress(0x20)
             task.wait(.210)
             if not active() then return end
             macroTap(0x33)
         end)
-        if spaceHeld then pcall(keyrelease,0x20) end
-        if mouseHeld then pcall(mouse1release) end
-        for vk in pairs(macroHeldKeys)do
-            pcall(keyrelease,vk);macroHeldKeys[vk]=nil
-        end
+        if spaceHeld or mouseHeld then releaseMacroInputs() end
+        releaseMacroInputs()
         macroBusy=false
         if not ok then macroReport(tostring(err)) end
     end)
@@ -1722,6 +1803,7 @@ macrosTab:Keybind({Name="Uptilt",Default="X",Flag="yusuke_uptilt_key",Mode="Pres
 
 connection=connectFrame("Heartbeat",function()
     pcall(updateMacroNotice)
+    if not macroBusy and releaseMacroInputs then pcall(releaseMacroInputs) end
     if not alive then return end
     local inputOK, acceptsInput = pcall(macroInputAllowed)
     if not inputOK or not acceptsInput then return end
@@ -1917,9 +1999,8 @@ local function mountHeadRide()
 
     local controls = {}
     local connections = {}
-    local Players     = players
     local RunService  = game:GetService("RunService")
-    local LocalPlayer = Players.LocalPlayer
+    local LocalPlayer = players.LocalPlayer
 
     -- ===========================================================================
     -- helpers
@@ -2020,8 +2101,9 @@ local function mountHeadRide()
     -- ===========================================================================
     task.spawn(function()
         while alive do
+            LocalPlayer=players.LocalPlayer
             local list = {}
-            for _, plr in ipairs(safe(function() return Players:GetPlayers() end, {}) or {}) do
+            for _, plr in ipairs(safe(function() return players:GetPlayers() end, {}) or {}) do
                 if plr ~= LocalPlayer and not isPlayerWhitelisted(plr) then
                     list[#list + 1] = plr
                 end
@@ -2139,6 +2221,7 @@ local function mountHeadRide()
     local lastStep = nil
 
     local function rideStep()
+        LocalPlayer=players.LocalPlayer
         local now = safe(function() return tick() end, nil)
         local dt  = (lastStep and now) and (now - lastStep) or 0.016
         lastStep  = now
@@ -2440,7 +2523,7 @@ local function mountHeadRide()
         while alive do
             local targetName = currentTarget and safe(function() return currentTarget.Name end, "?") or "none"
             local ping = safe(function() return GetPingValue() end, "?")
-            status:Set(string.format("Status: %s | Updates: %d/s\nTarget: %s | Players: %d | Ping: %s ms",
+            status:Set(string.format("Status: %s | Updates: %d/s\nTarget: %s | players: %d | Ping: %s ms",
                 lastStatus, stepRate, targetName, #targets, tostring(ping)))
             wait(0.25)
         end
@@ -2498,7 +2581,6 @@ end
 destroyHeadRide = mountHeadRide()
 
 local function mountPlayerESP()
-    local Players=players
     local RunService=game:GetService("RunService")
     local espTab=window:Tab("ESP")
     local modeOn=espTab:Toggle({Name="Mode bar ESP",Default=true,Flag="player_mode_esp"})
@@ -2510,6 +2592,13 @@ local function mountPlayerESP()
     local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
     local records={}
     local sidebarRecords={}
+    local sidebarPage=1
+    espTab:Keybind({Name="Next sidebar page",Default="F6",Mode="Press",Flag="sidebar_next_page",Callback=function()
+        if robloxFocused() and not robloxTextFocused() then sidebarPage=sidebarPage+1 end
+    end})
+    espTab:Keybind({Name="Previous sidebar page",Default="F7",Mode="Press",Flag="sidebar_previous_page",Callback=function()
+        if robloxFocused() and not robloxTextFocused() then sidebarPage=math.max(1,sidebarPage-1) end
+    end})
     local sidebarFooter={drawings={},used={}}
     local drawingValues={}
     local stopped=false
@@ -2540,6 +2629,7 @@ local function mountPlayerESP()
         if ok then return result end
     end
     local function componentCooldown(move,attributeName,readString)
+        if not compatibleMemoryLayout() then return nil end
         -- version-2c6fd5e09aaf4cfa: Instance.ComponentMap (+0x38) is a
         -- vector of {component pointer, type id} entries, each 0x10 bytes.
         -- Component 9 owns either one attribute (+0x08) or a counted attribute
@@ -2621,6 +2711,7 @@ local function mountPlayerESP()
         if ok and number(result) then return result end
     end
     local function constrainedCharge(charge)
+        if not compatibleMemoryLayout() then return nil end
         -- Verified constrained-value layout for Roblox version-2c6fd5e09aaf4cfa:
         -- MaxValue +0xA0, MinValue +0xA8, Value +0xB0.
         -- DoubleConstrainedValue uses Float64; IntConstrainedValue uses integers.
@@ -2654,6 +2745,7 @@ local function mountPlayerESP()
     -- Matcha returning the right wrapper class, Value, or FindFirstChild result.
     local rawMeterSources={}
     local function rawMeterMode(player,character,secondary)
+        if not compatibleMemoryLayout() then return nil end
         if type(memory_read)~="function" then return nil end
         local ok,ratio,source=pcall(function()
             local function pointer(value)
@@ -3067,6 +3159,7 @@ local function mountPlayerESP()
             end
         end
         if chosen then
+            state.progressAt=chosen.progressAt
             local candidate=chosen.endsAt
             if not state.endsAt then
                 state.endsAt=candidate;state.revision=state.revision+1
@@ -3095,6 +3188,7 @@ local function mountPlayerESP()
     end
     local function cooldownSeconds(state,now)
         if not state or not state.active or not number(state.endsAt) then return nil end
+        if not number(state.progressAt) or now-state.progressAt>.5 then return nil end
         local remaining=math.max(0,state.endsAt-now)
         local seconds=math.max(1,math.ceil(remaining-.000001))
         if state.displayCycle~=state.cycle then
@@ -3159,6 +3253,7 @@ local function mountPlayerESP()
         end
     end
     local function memoryGameTag(instance,tag)
+        if not compatibleMemoryLayout() then return nil end
         if not instance or type(memory_read)~="function" then return nil end
         -- Current Roblox component map: kind 12 is the NUL-separated tag string.
         -- Matcha's string reader stops at NUL, so read every byte explicitly.
@@ -3397,9 +3492,9 @@ local function mountPlayerESP()
         if override~=nil then return override end
         target=target or move
         local tagged=gameTag(target,"Guardbreaks")
-        if tagged~=nil then return tagged end
+        if tagged==true then return true end
         local hud=hudGuardbreak(player,slot,name)
-        if hud~=nil then return hud end
+        if hud==true then return true end
         local containers=target==move and {config,move} or {target}
         for _,container in ipairs(containers) do
             for _,key in ipairs(guardbreakKeys) do
@@ -3417,7 +3512,8 @@ local function mountPlayerESP()
                 end
             end
         end
-        return nil
+        if hud~=nil then return hud end
+        return tagged
     end
     local function readMoves(player,character,record,now)
         local moves,seen={},{}
@@ -3502,6 +3598,7 @@ local function mountPlayerESP()
             if number(move.cd) and move.cd<20 and history and number(history.endsAt) then
                 move.cooldownEndsAt=history.endsAt
                 move.cooldownSeconds=cooldownSeconds(history,now)
+                move.cooldownFreshUntil=(history.progressAt or now)+.5
             end
         end
         if record then
@@ -3541,7 +3638,7 @@ local function mountPlayerESP()
             local changed=job.last[key]~=state
             if changed then
                 job.last[key]=state
-                line(string.format("%.2fs %s%s %s",now-job.start,key,key==playerKey(Players.LocalPlayer) and " SELF" or " OTHER",state))
+                line(string.format("%.2fs %s%s %s",now-job.start,key,key==playerKey(players.LocalPlayer) and " SELF" or " OTHER",state))
             end
             if changed then
                 local pack=child(player,"Backpack")
@@ -3837,6 +3934,10 @@ local function mountPlayerESP()
             text("Name"..row,line,x+w/2,nameY+(row-1)*lineHeight,nameSize,true)
         end
         local seconds=number(move.cooldownSeconds) and move.cooldownSeconds or nil
+        if seconds and number(move.cooldownEndsAt) then
+            if now>(move.cooldownFreshUntil or 0) then seconds=nil
+            else seconds=math.min(seconds,math.max(1,math.ceil(move.cooldownEndsAt-now-.000001))) end
+        end
         local state=not known and "UNKNOWN" or ready and "READY"
             or (seconds and (math.max(1,math.ceil(seconds-.000001)).."s") or "...")
         local stateY=y+h-stateSize-padding
@@ -3847,10 +3948,10 @@ local function mountPlayerESP()
         local character=player.Character
         local identity=characterKey(character)
         if record.character~=identity then
-            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.lastModeRead=nil;record.mode2=nil;record.mode2Source=nil;record.showMode2=false;record.previousModeCharge=nil;record.inferredMode=false;record.moves={};record.cooldowns={};record.lastMovesRead=nil
+            hide(record);record.character=identity;record.bounds=nil;record.poseMotion=nil;record.lastScale=nil;record.moveTextLayouts=nil;record.boxSide=nil;record.nextRead=0;record.mode=nil;record.lastModeRead=nil;record.lastMode2Read=nil;record.mode2=nil;record.mode2Source=nil;record.showMode2=false;record.previousModeCharge=nil;record.inferredMode=false;record.moves={};record.cooldowns={};record.lastMovesRead=nil
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
-        local me=Players.LocalPlayer
+        local me=players.LocalPlayer
         if teamFilter.Value and me and playerKey(player)~=playerKey(me) and me.Team~=nil and player.Team==me.Team then hide(record);return end
         local head=child(character,"Head") or child(character,"HumanoidRootPart")
         local root=child(character,"HumanoidRootPart") or child(character,"UpperTorso") or child(character,"Torso")
@@ -3876,10 +3977,12 @@ local function mountPlayerESP()
                 -- A transient wrapper/discovery failure must not erase a valid
                 -- reading. Character changes already clear this cached value.
                 local secondOk,secondValue,secondSource=pcall(readMode,player,character,true)
-                if secondOk then
-                    record.mode2=secondValue
-                    record.mode2Source=secondSource
-                else record.mode2=nil;record.showMode2=false end
+                if secondOk and number(secondValue) then
+                    record.mode2=secondValue;record.mode2Source=secondSource;record.lastMode2Read=now
+                elseif not record.lastMode2Read or now-record.lastMode2Read>.5 then
+                    record.mode2=nil;record.mode2Source=nil;record.showMode2=false
+                end
+                if not record.lastModeRead or now-record.lastModeRead>.5 then record.mode=nil end
             end
             if movesOn.Value then
                 local success,value=pcall(readMoves,player,character,record,now)
@@ -3957,13 +4060,16 @@ local function mountPlayerESP()
             print("[ESP] "..tostring(player.Name)..": "..message)
         end
     end
+    local lastRefreshError
     local function refreshPlayerData()
         while not stopped and alive do
-            local ok,list=pcall(function() return Players:GetPlayers() end)
-            if ok then
+            local passOK,passError=pcall(function()
+            if refreshServices then refreshServices() end
+            local ok,list=pcall(function() return players:GetPlayers() end)
+            if ok and type(list)=="table" then
                 latestPlayerList=list
                 local present={}
-                local me=playerKey(Players.LocalPlayer)
+                local me=playerKey(players.LocalPlayer)
                 for _,player in ipairs(list) do
                     if stopped or not alive then return end
                     local identity=playerKey(player)
@@ -3993,15 +4099,37 @@ local function mountPlayerESP()
                 preparedPlayers={}
                 for _,record in pairs(records) do hide(record) end
             end
+            end)
+            if not passOK then
+                preparedPlayers={}
+                for _,record in pairs(records) do hide(record) end
+                if lastRefreshError~=tostring(passError) then
+                    lastRefreshError=tostring(passError);print("[ESP refresh] "..lastRefreshError)
+                end
+            else lastRefreshError=nil end
             task.wait(.025)
         end
+    end
+    local function sidebarMoveCount(moves)
+        local count=math.max(4,#moves)
+        for _,move in ipairs(moves) do
+            local slot=tonumber(move.slot)
+            if slot and slot>=1 and slot<=99 and slot%1==0 then count=math.max(count,slot) end
+        end
+        return count
     end
     local function sidebarMoveSize(width,count,scale)
         local gap=4*scale
         local multiplier=math.max(.25,math.min(2,(tonumber(moveSize.Value) or 100)/100))
-        count=2*math.ceil(math.max(4,count)/2)
+        local groups=math.ceil(math.max(4,count)/2)
         local nameWidth=math.min(110*scale,width*.34)
-        return math.max(1,math.min(64*scale*multiplier,(width-nameWidth-count*gap)/count)),gap
+        local base=math.max(1,(width-nameWidth-2*groups*gap)/(groups*2))
+        local size=base*multiplier
+        -- Larger preferences wrap each side into rows instead of silently
+        -- clamping the slider. The username keeps its reserved centre column.
+        local columns=math.max(1,math.min(groups,math.floor((width-nameWidth)/(2*(size+gap))+.00001)))
+        local rows=math.ceil(groups/columns)
+        return size,gap,columns,rows*size+(rows-1)*gap
     end
     local function sidebarLayout(viewWidth,viewHeight,count,requestedPage,entries)
         local scale=math.max(.65,math.min(1.3,viewHeight/900))
@@ -4012,8 +4140,8 @@ local function mountPlayerESP()
         if movesOn.Value then
             local largestCard=0
             for _,entry in ipairs(entries or {}) do
-                local size=sidebarMoveSize(width,math.max(1,#entry.sample.record.moves),scale)
-                largestCard=math.max(largestCard,size)
+                local _,_,_,height=sidebarMoveSize(width,sidebarMoveCount(entry.sample.record.moves),scale)
+                largestCard=math.max(largestCard,height)
             end
             rowHeight=rowHeight+math.max(0,largestCard+8*scale-23*scale)
         end
@@ -4065,7 +4193,8 @@ local function mountPlayerESP()
         end
         -- Alphabetical order is independent of camera direction and distance.
         table.sort(entries,function(a,b) return a.identity<b.identity end)
-        local layout=sidebarLayout(view.X,view.Y,#entries,1,entries)
+        local layout=sidebarLayout(view.X,view.Y,#entries,sidebarPage,entries)
+        sidebarPage=layout.page
         local scale=layout.scale
         local now=tick and tick() or os.clock()
         local green=Color3.fromRGB(0,255,0)
@@ -4081,14 +4210,15 @@ local function mountPlayerESP()
             row.used={}
             local x,y=layout.left,layout.top+(index-layout.first)*layout.rowHeight
             local width=layout.width
-            local size,gap=sidebarMoveSize(width,math.max(1,#data.moves),scale)
-            local groupCount=math.ceil(math.max(4,#data.moves)/2)
-            local headerShift=movesOn.Value and math.max(0,size+8*scale-23*scale) or 0
-            local nameWidth=movesOn.Value and width-2*groupCount*(size+gap) or width
+            local moveCount=sidebarMoveCount(data.moves)
+            local size,gap,columns,headerHeight=sidebarMoveSize(width,moveCount,scale)
+            local groupCount=math.ceil(moveCount/2)
+            local headerShift=movesOn.Value and math.max(0,headerHeight+8*scale-23*scale) or 0
+            local nameWidth=movesOn.Value and width-2*columns*(size+gap) or width
             local name=object(row,"Name","Text")
             set(name,"Size",math.max(1,math.floor(math.min(16*scale,nameWidth/(math.max(1,#identity)*.65)))))
             set(name,"Center",true)
-            label(row,"Name",identity,x+width/2,y+(movesOn.Value and size/2 or 0),modeRed)
+            label(row,"Name",identity,x+width/2,y+(movesOn.Value and headerHeight/2 or 0),modeRed)
             sidebarMeter(row,"Health",data.healthRatio,x,y+23*scale+headerShift,width,15*scale,4,green,scale)
             if data.health~=nil and data.maxHealth~=nil then
                 local hpText=object(row,"HealthText","Text")
@@ -4109,13 +4239,15 @@ local function mountPlayerESP()
                 table.sort(moves,function(a,b) return (tonumber(a.slot) or 99)<(tonumber(b.slot) or 99) end)
                 if #moves==0 then moves[1]={name="Moves",source="unknown"} end
                 for index,move in ipairs(moves) do
-                    local cardX
-                    if index<=groupCount then
-                        cardX=x+(index-1)*(size+gap)
-                    else
-                        cardX=x+width-groupCount*size-(groupCount-1)*gap+(index-groupCount-1)*(size+gap)
-                    end
-                    moveBox(row,index,move,cardX,y,size,size,now)
+                    local slot=tonumber(move.slot) or index
+                    if slot<1 or slot>99 or slot%1~=0 then slot=index end
+                    local onRight=slot>groupCount
+                    local sideIndex=(onRight and slot-groupCount or slot)-1
+                    local column=sideIndex%columns
+                    local rowIndex=math.floor(sideIndex/columns)
+                    local cardX=onRight and x+width-columns*size-(columns-1)*gap+column*(size+gap)
+                        or x+column*(size+gap)
+                    moveBox(row,index,move,cardX,y+rowIndex*(size+gap),size,size,now)
                 end
             end
             for key,drawing in pairs(row.drawings) do
@@ -4131,7 +4263,7 @@ local function mountPlayerESP()
             local footer=object(sidebarFooter,"Page","Text")
             set(footer,"Size",math.max(8,math.floor(11*scale+.5)))
             set(footer,"Center",true)
-            label(sidebarFooter,"Page",string.format("Showing %d of %d players",layout.last,#entries),
+            label(sidebarFooter,"Page",string.format("Page %d/%d · Players %d–%d of %d",layout.page,layout.pages,layout.first,layout.last,#entries),
                 layout.left+layout.width/2,layout.top+layout.rows*layout.rowHeight,white)
         end
     end
@@ -4232,7 +4364,6 @@ destroyPlayerESP=mountPlayerESP()
 
 -- Reads the same replicated value as aba.rbxl's built-in spin GUI.
 local function mountMahoragaCounter()
-    local Players = players
     local RunService = game:GetService("RunService")
     local counterTab = window:Tab("Mahoraga")
     counterTab:Section("Wheel spin counter")
@@ -4367,7 +4498,7 @@ local function mountMahoragaCounter()
     local lastCounterError
     local function refresh()
         local camera = world.CurrentCamera
-        local localPlayer = Players.LocalPlayer
+        local localPlayer = players.LocalPlayer
         local localCount = localPlayer and spinValue(localPlayer.Character)
         if camera and showSelf.Value and localCount~=nil and not isPlayerWhitelisted(localPlayer) then
             local humanoid=localPlayer.Character:FindFirstChildOfClass("Humanoid")
