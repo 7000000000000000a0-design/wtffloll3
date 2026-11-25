@@ -2813,25 +2813,58 @@ destroyHeadRide = mountHeadRide()
 local function mountPlayerESP()
     local RunService=game:GetService("RunService")
     local espTab=window:Tab("ESP")
-    local modeOn=espTab:Toggle({Name="Mode bar ESP",Default=true,Flag="player_mode_esp"})
-    local sidebarOn=espTab:Toggle({Name="Mode bars on screen side",Default=false,Flag="mode_screen_sidebar"})
-    local movesOn=espTab:Toggle({Name="Move cooldown ESP",Default=true,Flag="player_move_esp"})
-    local moveSize=espTab:Slider({Name="Move box size (%)",Min=25,Max=200,Default=100,Increment=5,Flag="player_move_esp_size"})
+    espTab:Section("Display")
+    local modeOn=espTab:Toggle({Name="Mode bars",Default=true,Flag="player_mode_esp"})
+    local movesOn=espTab:Toggle({Name="Move cards",Default=true,Flag="player_move_esp"})
+    local sidebarOn=espTab:Toggle({Name="Screen sidebar",Default=false,Flag="mode_screen_sidebar"})
+    espTab:Section("Players")
     local selfOn=espTab:Toggle({Name="Show yourself",Default=false,Flag="player_esp_show_self"})
-    local spectatingOn=espTab:Toggle({Name="ESP while spectating",Default=true,Flag="player_esp_while_spectating"})
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
-    local teamReference=espTab:Dropdown({Name="Spectator team reference",Options={"Auto"},Default="Auto",Flag="player_esp_team_reference"})
-    local teamStatus=espTab:Paragraph({Name="Team filter",Content="Uses your team while playing and the watched player's team while spectating."})
+    local expanded=false
+    local refreshOptions
+    local moreOptions=espTab:Button({Name="More options",Callback=function()
+        expanded=not expanded
+        if refreshOptions then refreshOptions() end
+    end})
+    local appearanceSection=espTab:Section("Appearance")
+    local moveSize=espTab:Slider({Name="Move size (%)",Min=25,Max=200,Default=100,Increment=5,Flag="player_move_esp_size"})
     local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
+    local spectatingSection=espTab:Section("Spectating")
+    local spectatingOn=espTab:Toggle({Name="ESP while spectating",Default=true,Flag="player_esp_while_spectating"})
+    local teamReference=espTab:Dropdown({Name="Team reference",Options={"Auto"},Default="Auto",Flag="player_esp_team_reference"})
+    local teamStatus=espTab:Paragraph({Name="Team filter",Content="Uses your team while playing and the watched player's team while spectating."})
+    local sidebarSection=espTab:Section("Sidebar shortcuts")
     local records={}
     local sidebarRecords={}
     local sidebarPage=1
-    espTab:Keybind({Name="Next sidebar page",Default="F6",Mode="Press",Flag="sidebar_next_page",Callback=function()
+    local nextSidebarPage=espTab:Keybind({Name="Next page",Default="F6",Mode="Press",Flag="sidebar_next_page",Callback=function()
         if robloxFocused() and not robloxTextFocused() then sidebarPage=sidebarPage+1 end
     end})
-    espTab:Keybind({Name="Previous sidebar page",Default="F7",Mode="Press",Flag="sidebar_previous_page",Callback=function()
+    local previousSidebarPage=espTab:Keybind({Name="Previous page",Default="F7",Mode="Press",Flag="sidebar_previous_page",Callback=function()
         if robloxFocused() and not robloxTextFocused() then sidebarPage=math.max(1,sidebarPage-1) end
     end})
+    refreshOptions=function()
+        moreOptions.Name=expanded and "Fewer options" or "More options"
+        sidebarOn:SetVisible(modeOn.Value)
+        appearanceSection:SetVisible(expanded)
+        moveSize:SetVisible(expanded and movesOn.Value)
+        range:SetVisible(expanded)
+        spectatingSection:SetVisible(expanded)
+        spectatingOn:SetVisible(expanded)
+        local showTeamReference=expanded and spectatingOn.Value and teamFilter.Value
+        teamReference:SetVisible(showTeamReference)
+        teamStatus:SetVisible(showTeamReference)
+        local showSidebar=expanded and sidebarOn.Value and modeOn.Value
+        sidebarSection:SetVisible(showSidebar)
+        nextSidebarPage:SetVisible(showSidebar)
+        previousSidebarPage:SetVisible(showSidebar)
+    end
+    modeOn.Callback=refreshOptions
+    movesOn.Callback=refreshOptions
+    sidebarOn.Callback=refreshOptions
+    teamFilter.Callback=refreshOptions
+    spectatingOn.Callback=refreshOptions
+    refreshOptions()
     local sidebarFooter={drawings={},used={}}
     local drawingValues={}
     local stopped=false
