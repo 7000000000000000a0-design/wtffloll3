@@ -2791,7 +2791,7 @@ local function mountPlayerESP()
     local movesOn=espTab:Toggle({Name="Move cooldown ESP",Default=true,Flag="player_move_esp"})
     local moveSize=espTab:Slider({Name="Move box size (%)",Min=25,Max=200,Default=100,Increment=5,Flag="player_move_esp_size"})
     local selfOn=espTab:Toggle({Name="Show yourself",Default=false,Flag="player_esp_show_self"})
-    local spectatorsOn=espTab:Toggle({Name="Show spectators",Default=false,Flag="player_esp_spectators"})
+    local spectatorsOn=espTab:Toggle({Name="Spectator list / markers",Default=false,Flag="player_esp_spectators"})
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
     local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
     local records={}
@@ -4156,6 +4156,21 @@ local function mountPlayerESP()
         local stateY=y+h-stateSize-padding
         if not ready then text("State",state,x+w/2,stateY,stateSize,true) end
     end
+    local function espViewOrigin(camera)
+        -- Visibility range follows the view, including spectating/freecam.
+        -- An inactive local avatar can be parked far outside the arena.
+        local origin
+        pcall(function() origin=camera.CFrame.Position end)
+        if not origin then pcall(function() origin=camera.Position end) end
+        if not origin then
+            pcall(function()
+                local me=players.LocalPlayer
+                local root=child(me and me.Character,"HumanoidRootPart")
+                origin=root and root.Position
+            end)
+        end
+        return origin
+    end
     local function preparePlayer(player,record,now)
         if isPlayerWhitelisted(player) then hide(record);return end
         local character=player.Character
@@ -4177,8 +4192,8 @@ local function mountPlayerESP()
         record.health=record.healthRatio~=nil and math.max(0,math.min(maximum,health)) or nil
         record.maxHealth=record.healthRatio~=nil and maximum or nil
         local okDistance,distance=pcall(function()
-            local origin=child(me and me.Character,"HumanoidRootPart")
-            return (head.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
+            local origin=espViewOrigin(camera)
+            return (head.Position-origin).Magnitude
         end)
         if okDistance and number(distance) and distance>range.Value then hide(record);return end
         if now>=record.nextRead then
@@ -4545,7 +4560,7 @@ local function mountPlayerESP()
         local present={}
         local frame=screenProjection(camera,true)
         local me=players.LocalPlayer
-        local origin=child(me and me.Character,"HumanoidRootPart")
+        local origin=espViewOrigin(camera)
         for _,entry in ipairs(spectatorSamples) do
             if (entry.player~=me or selfOn.Value) and not isPlayerWhitelisted(entry.player) then
                 entries[#entries+1]=entry;present[entry.identity]=true
@@ -4557,7 +4572,7 @@ local function mountPlayerESP()
                     local root=child(character,"HumanoidRootPart") or child(character,"Head")
                     local humanoid=character and character:FindFirstChildOfClass("Humanoid")
                     if not root or not frame or (humanoid and humanoid.Health<=0) then return end
-                    local distance=(root.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
+                    local distance=(root.Position-origin).Magnitude
                     if not number(distance) or distance>range.Value then return end
                     local point,visible=projectToScreen(root.Position+Vector3.new(0,3,0),camera,frame)
                     if not point or visible==false or not number(point.X) or not number(point.Y)
