@@ -2791,7 +2791,7 @@ local function mountPlayerESP()
     local movesOn=espTab:Toggle({Name="Move cooldown ESP",Default=true,Flag="player_move_esp"})
     local moveSize=espTab:Slider({Name="Move box size (%)",Min=25,Max=200,Default=100,Increment=5,Flag="player_move_esp_size"})
     local selfOn=espTab:Toggle({Name="Show yourself",Default=false,Flag="player_esp_show_self"})
-    local watchedOn=espTab:Toggle({Name="Show watched player ESP",Default=false,Flag="player_esp_show_watched"})
+    local spectatingOn=espTab:Toggle({Name="ESP while spectating",Default=true,Flag="player_esp_while_spectating"})
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
     local teamReference=espTab:Dropdown({Name="Spectator team reference",Options={"Auto"},Default="Auto",Flag="player_esp_team_reference"})
     local teamStatus=espTab:Paragraph({Name="Team filter",Content="Uses your team while playing and the watched player's team while spectating."})
@@ -4295,9 +4295,8 @@ local function mountPlayerESP()
     local function espPlayerVisible(player)
         if isPlayerWhitelisted(player) then return false end
         local key=playerKey(player)
-        if espView.spectating and espView.roles[key] then return false end
-        if espView.spectating and espView.watched and key==playerKey(espView.watched) then
-            return watchedOn.Value==true
+        if espView.spectating then
+            if not spectatingOn.Value or espView.roles[key] then return false end
         end
         if teamFilter.Value and player~=players.LocalPlayer and espView.team then
             local team=espView.teams[key]
