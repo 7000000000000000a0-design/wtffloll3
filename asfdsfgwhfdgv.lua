@@ -4305,6 +4305,11 @@ local function mountPlayerESP()
         for index=layout.first,layout.last do
             local entry=entries[index]
             local identity=entry.identity
+            local displayName=identity
+            pcall(function()
+                local value=entry.sample.player.DisplayName
+                if type(value)=="string" and value~="" then displayName=value end
+            end)
             seen[identity]=true
             local data=entry.sample.record
             local row=sidebarRecords[identity]
@@ -4318,9 +4323,9 @@ local function mountPlayerESP()
             local headerShift=movesOn.Value and math.max(0,headerHeight+8*scale-23*scale) or 0
             local nameWidth=movesOn.Value and width-2*columns*(size+gap) or width
             local name=object(row,"Name","Text")
-            set(name,"Size",math.max(1,math.floor(math.min(16*scale,nameWidth/(math.max(1,#identity)*.65)))))
+            set(name,"Size",math.max(1,math.floor(math.min(16*scale,nameWidth/(math.max(1,#displayName)*.65)))))
             set(name,"Center",true)
-            label(row,"Name",identity,x+width/2,y+(movesOn.Value and headerHeight/2 or 0),modeRed)
+            label(row,"Name",displayName,x+width/2,y+(movesOn.Value and headerHeight/2 or 0),modeRed)
             sidebarMeter(row,"Health",data.healthRatio,x,y+23*scale+headerShift,width,15*scale,4,green,scale)
             if data.health~=nil and data.maxHealth~=nil then
                 local hpText=object(row,"HealthText","Text")
