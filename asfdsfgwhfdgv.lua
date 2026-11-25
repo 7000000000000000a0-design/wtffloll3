@@ -722,6 +722,80 @@ local function whitelistBlocksInput()
     local ok,target=pcall(function() return players.LocalPlayer:GetMouse().Target end)
     return ok and target and isWhitelistedObject(target) or false
 end
+local function mountDisplayNameResolver()
+    local cache={}
+    local function userId(player)
+        local id
+        pcall(function() id=player.UserId end)
+        if type(id)=="number" and id==id and id>0 and id<9007199254740991 and id%1==0 then return id end
+    end
+    local function validName(value)
+        return type(value)=="string" and value~="" and #value<=256
+    end
+    local function accountName(id)
+        if type(httpget)~="function" then return nil end
+        local body=httpget("https://users.roblox.com/v1/users/"..string.format("%.0f",id))
+        if type(body)~="string" or #body>65536 then return nil end
+        local data
+        pcall(function()
+            local http=game:GetService("HttpService")
+            data=http:JSONDecode(body)
+        end)
+        if type(data)=="table" and tonumber(data.id)==id and validName(data.displayName) then return data.displayName end
+        -- Some Matcha builds omit HttpService. Plain JSON strings can still
+        -- be read safely; escaped strings require the proper decoder above.
+        local returnedId=tonumber(body:match([=["id"%s*:%s*(%d+)]=]))
+        local name=body:match([=["displayName"%s*:%s*"([^"\]*)"]=])
+        if returnedId==id and validName(name) then return name end
+    end
+    if task and type(task.spawn)=="function" and type(task.wait)=="function" then
+        task.spawn(function()
+            while alive do
+                local now=tick and tick() or os.clock()
+                local present={}
+                local pending
+                for _,player in ipairs(rosterPlayers) do
+                    local id=userId(player)
+                    if id then
+                        present[id]=true
+                        local entry=cache[id]
+                        if not entry then entry={nextTry=0};cache[id]=entry end
+                        entry.lastSeen=now
+                        if not pending and now>=entry.nextTry then pending=id end
+                    end
+                end
+                for id,entry in pairs(cache) do
+                    if not present[id] and now-(entry.lastSeen or now)>60 then cache[id]=nil end
+                end
+                if pending then
+                    local entry=cache[pending]
+                    entry.nextTry=now+60
+                    local ok,name=pcall(accountName,pending)
+                    if not alive then break end
+                    if ok and validName(name) then entry.name=name;entry.nextTry=now+600 end
+                end
+                task.wait(.5)
+            end
+        end)
+    end
+    return function(player,fallback)
+        local id=userId(player)
+        local entry=id and cache[id]
+        if entry and validName(entry.name) then return entry.name end
+        local direct,humanoidName
+        pcall(function() direct=player.DisplayName end)
+        if validName(direct) and direct~=fallback then return direct end
+        pcall(function()
+            local character=player.Character
+            local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+            humanoidName=humanoid and humanoid.DisplayName
+        end)
+        if validName(humanoidName) and humanoidName~=fallback then return humanoidName end
+        return validName(direct) and direct or fallback
+    end
+end
+local displayNameFor=mountDisplayNameResolver()
+
 local function mountPlayersTab()
     local page=window:Tab("Players")
     page:Paragraph({Name="Whitelist",Content="Turn on a player to exclude them from targeting, ESP and player counters."})
@@ -4342,11 +4416,7 @@ local function mountPlayerESP()
         for index=layout.first,layout.last do
             local entry=entries[index]
             local identity=entry.identity
-            local displayName=identity
-            pcall(function()
-                local value=entry.sample.player.DisplayName
-                if type(value)=="string" and value~="" then displayName=value end
-            end)
+            local displayName=displayNameFor(entry.sample.player,identity)
             seen[identity]=true
             local data=entry.sample.record
             local row=sidebarRecords[identity]
