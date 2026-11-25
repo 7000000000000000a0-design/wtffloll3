@@ -2816,7 +2816,7 @@ local function mountPlayerESP()
     espTab:Section("Display")
     local modeOn=espTab:Toggle({Name="Mode bars",Default=true,Flag="player_mode_esp"})
     local movesOn=espTab:Toggle({Name="Move cards",Default=true,Flag="player_move_esp"})
-    local sidebarOn=espTab:Toggle({Name="Screen sidebar",Default=false,Flag="mode_screen_sidebar"})
+    local sidebarOn=espTab:Toggle({Name="Screen sidebar",Default=modeOn.Value,Flag="mode_screen_sidebar"})
     espTab:Section("Players")
     local selfOn=espTab:Toggle({Name="Show yourself",Default=false,Flag="player_esp_show_self"})
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
@@ -2856,7 +2856,10 @@ local function mountPlayerESP()
         nextSidebarPage:SetVisible(showSidebar)
         previousSidebarPage:SetVisible(showSidebar)
     end
-    modeOn.Callback=refreshOptions
+    modeOn.Callback=function(on)
+        if on then sidebarOn:Set(true) end
+        refreshOptions()
+    end
     movesOn.Callback=refreshOptions
     sidebarOn.Callback=refreshOptions
     teamFilter.Callback=refreshOptions
