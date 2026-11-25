@@ -371,12 +371,23 @@ source = source:sub(1, wheelFrameEnd) .. [=[
         if type(isrbxactive) == "function" and not isrbxactive() then wheelDelta = 0 end]=] .. source:sub(wheelFrameEnd + 1)
 source = source:gsub("alive = false\n        if saveAt", "alive = false\n        if wheelConnection then pcall(function() wheelConnection:Disconnect() end) end\n        if saveAt", 1)
 local ownedDrawings={}
+local removedDrawings=setmetatable({}, {__mode="k"})
+local function removeOwnedDrawing(drawing)
+    if not drawing or removedDrawings[drawing] then return true end
+    -- Mark BEFORE invoking native destruction: nested unloads and the menu's
+    -- own wipe must never remove the same native handle twice.
+    removedDrawings[drawing]=true
+    pcall(function() drawing.Visible=false end)
+    local ok,result=pcall(function() return drawing:Remove() end)
+    if not ok or result==false then
+        ok,result=pcall(function() return drawing:Destroy() end)
+    end
+    return ok and result~=false
+end
+ownedDrawings.remove=removeOwnedDrawing
 local function clearOwnedDrawings()
-    for _,drawing in ipairs(ownedDrawings)do
-        pcall(function()drawing.Visible=false end)
-        pcall(function()drawing.Transparency=0 end)
-        local ok=pcall(function()drawing:Remove()end)
-        if not ok then pcall(function()drawing:Destroy()end)end
+    while #ownedDrawings>0 do
+        removeOwnedDrawing(table.remove(ownedDrawings))
     end
 end
 -- Track only objects created by this copy of Nova, without replacing global Drawing.
@@ -385,9 +396,11 @@ source=source:gsub("task%.spawn%(callback, el%)","callback(el)")
 -- A button can unload during frame(); remove anything drawn later in that frame.
 source=source:gsub("local ok, err = pcall%(frame%)","local ok, err = pcall(frame)\n        if not alive then pcall(wipe) end")
 source=source:gsub("Drawing%.new","abaOwnedDrawingNew")
+source=source:gsub("([%w_%.]+):Remove%(%)","abaOwnedDrawingRemove(%1)")
 source=table.concat({
     "local abaNativeDrawingNew=Drawing.new",
     "local abaOwnedDrawings=_G.ABATimingOwnedDrawings",
+    "local abaOwnedDrawingRemove=abaOwnedDrawings.remove",
     "local function abaOwnedDrawingNew(kind)",
     "    local object=abaNativeDrawingNew(kind)",
     "    abaOwnedDrawings[#abaOwnedDrawings+1]=object",
@@ -1730,7 +1743,7 @@ local function mountBlockWatcher()
         task.spawn(function()
             while alive and not stopped do
                 poll()
-                task.wait(enabled.Value and .001 or .05)
+                task.wait(enabled.Value and (activationHeld() and .001 or .01) or .05)
             end
             releaseMoveKey()
         end)
@@ -2113,11 +2126,24 @@ local function mountHeadRide()
     local function notify(content,title,duration)
         pcall(function() window:Notify({Title=title or "Head Ride",Content=tostring(content),Duration=duration or 4}) end)
     end
+    local function finiteVector(vector,limit)
+        limit=limit or 1e7
+        local ok,valid=pcall(function()
+            for _,key in ipairs({"X","Y","Z"}) do
+                local value=vector[key]
+                if type(value)~="number" or value~=value or math.abs(value)>limit then return false end
+            end
+            return true
+        end)
+        return ok and valid==true
+    end
     local velocityPart
     local function stopRideVelocity()
         local part=velocityPart
         velocityPart=nil
         if not part then return end
+        local attached,parent=pcall(function() return part.Parent end)
+        if not attached or parent==nil then return end
         local zero=Vector3.new(0,0,0)
         pcall(function() part.AssemblyLinearVelocity=zero end)
         pcall(function() part.Velocity=zero end)
@@ -2166,8 +2192,10 @@ local function mountHeadRide()
     -- Velocity is a documented BasePart property; AssemblyLinearVelocity is too.
     local function velOf(part)
         local v = safe(function() return part.AssemblyLinearVelocity end, nil)
-        if v then return v end
-        return safe(function() return part.Velocity end, nil) or Vector3.zero
+        if finiteVector(v,10000) then return v end
+        v=safe(function() return part.Velocity end,nil)
+        if finiteVector(v,10000) then return v end
+        return Vector3.new(0,0,0)
     end
 
     local function isAlive(plr)
@@ -2293,7 +2321,7 @@ local function mountHeadRide()
         if not anchor then return nil end
 
         local pos = safe(function() return anchor.Position end, nil)
-        if not pos then return nil end
+        if not finiteVector(pos) then return nil end
 
         -- sit above the head, not inside it
         local height = tonumber(gv("ride_height", 4.0)) or 4.0
@@ -2357,14 +2385,14 @@ local function mountHeadRide()
         end
 
         local goal = goalPosition(currentTarget)
-        if not goal then
+        if not finiteVector(goal) then
             stopRideVelocity()
             lastStatus = "target has no head"
             return
         end
 
         local here = safe(function() return me.Position end, nil)
-        if not here then
+        if not finiteVector(here) then
             stopRideVelocity()
             lastStatus = "cannot read position"
             return
@@ -2391,6 +2419,7 @@ local function mountHeadRide()
             else
                 dest = goal
             end
+            if not finiteVector(dest) then stopRideVelocity();lastStatus="invalid movement reading";return end
             if pcall(function() me.Position = dest end) then
                 stepCount = stepCount + 1
                 lastStatus = arrived and "riding (position)" or "climbing"
@@ -2403,6 +2432,7 @@ local function mountHeadRide()
             if climb > 0 and want.Magnitude > climb then
                 want = want.Unit * climb
             end
+            if not finiteVector(want,10000) then stopRideVelocity();lastStatus="invalid velocity reading";return end
             if velocityPart and velocityPart~=me then stopRideVelocity() end
             local ok = pcall(function() me.AssemblyLinearVelocity = want end)
             if not ok then
@@ -2443,7 +2473,7 @@ local function mountHeadRide()
         while alive do
             if updateSource() == 2 then
                 updateRide()
-                local hz = math.clamp(tonumber(gv("ride_hz", 200)) or 200, 30, 1000)
+                local hz = math.clamp(tonumber(gv("ride_hz", 120)) or 120, 30, 240)
                 wait(1 / hz)
             else
                 wait(0.1)
@@ -2600,7 +2630,7 @@ local function mountHeadRide()
     slider("ride_climb", "Rise speed (studs/s)", 0, 300, 87, 1)
     slider("ride_gain", "Velocity gain", 1, 40, 12, 0.1)
     dropdown("ride_tick", "Update on", {"Heartbeat", "RenderStepped", "Fast loop"}, 2)
-    slider("ride_hz", "Fast loop rate (per second)", 30, 1000, 1000, 1)
+    slider("ride_hz", "Fast loop rate (per second)", 30, 240, 120, 1)
 
     tab:Section("Target")
     dropdown("ride_target", "Pick by", {"Nearest", "Closest to crosshair"}, 0)
@@ -2673,7 +2703,7 @@ local function mountHeadRide()
         end
         hideDrawings()
         for _, drawing in pairs({circle, label, line}) do
-            pcall(function() drawing:Remove() end)
+            removeOwnedDrawing(drawing)
         end
     end
 end
@@ -3779,6 +3809,7 @@ local function mountPlayerESP()
         end
     end
     local function set(d,key,value)
+        if removedDrawings[d] then return end
         local values=drawingValues[d]
         if not values then values={};drawingValues[d]=values end
         if values[key]~=value then d[key]=value;values[key]=value end
@@ -3789,8 +3820,7 @@ local function mountPlayerESP()
     local function release(record)
         hide(record)
         for _,d in pairs(record.drawings) do
-            local ok=pcall(function() d:Remove() end)
-            if not ok then pcall(function() d:Destroy() end) end
+            removeOwnedDrawing(d)
             for i=#ownedDrawings,1,-1 do if ownedDrawings[i]==d then table.remove(ownedDrawings,i);break end end
             drawingValues[d]=nil
         end
@@ -3813,11 +3843,14 @@ local function mountPlayerESP()
         return d
     end
     local function label(record,key,text,x,y,color)
+        if not number(x) or not number(y) or math.abs(x)>1e7 or math.abs(y)>1e7 then return end
         local d=object(record,key,"Text")
         set(d,"Text",text);set(d,"Position",Vector2.new(x,y));set(d,"Color",color);set(d,"Visible",true)
         record.used[key]=true
     end
     local function square(record,key,x,y,w,h,color)
+        if not number(x) or not number(y) or not number(w) or not number(h)
+            or math.abs(x)>1e7 or math.abs(y)>1e7 or w<0 or h<0 or w>16384 or h>16384 then return end
         local d=object(record,key,"Square")
         set(d,"Position",Vector2.new(x,y));set(d,"Size",Vector2.new(w,h));set(d,"Color",color);set(d,"Visible",w>0 and h>0)
         record.used[key]=true
@@ -3925,6 +3958,9 @@ local function mountPlayerESP()
         local height=(upper+lower)*scale
         if height<3 then height=3;scale=height/(upper+lower) end
         if not number(height) or height<=0 then return nil end
+        local maxHeight=math.max(64,(frame and frame.height or camera.ViewportSize.Y)*2)
+        if height>maxHeight then scale=maxHeight/(upper+lower);height=maxHeight end
+        record.lastScale=scale
         return point.X-halfWidth*scale,point.X+halfWidth*scale,
             point.Y-upper*scale,math.max(3,height)
     end
@@ -3989,6 +4025,7 @@ local function mountPlayerESP()
         end
         local function text(suffix,text,tx,ty,size,center)
             local d=object(record,key..suffix,"Text")
+            size=math.max(1,math.min(32,math.floor(size+.5)))
             set(d,"Size",size);set(d,"Center",center);set(d,"ZIndex",903)
             label(record,key..suffix,text,tx,ty,white)
         end
@@ -4635,8 +4672,7 @@ local function mountMahoragaCounter()
         if heartbeat then pcall(function() heartbeat:Disconnect() end) end
         for _,drawing in pairs(bar) do
             hide(drawing)
-            local ok=pcall(function() drawing:Remove() end)
-            if not ok then pcall(function() drawing:Destroy() end) end
+            removeOwnedDrawing(drawing)
             for i=#ownedDrawings,1,-1 do
                 if ownedDrawings[i]==drawing then table.remove(ownedDrawings,i); break end
             end
