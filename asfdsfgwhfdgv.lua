@@ -78,7 +78,6 @@ do
     until false
 end
 if _G.ABAStartupToken~=startupToken then return end
-_G.ABAStartupToken=nil
 local memoryLayoutCache={}
 local function compatibleMemoryLayout()
     if type(getbase)~="function" or type(memory_read)~="function" then return false end
@@ -102,6 +101,7 @@ end
 local url = "https://raw.githubusercontent.com/Martinikaws/Nova/88f5bd44551d03d6a01ba07b761519eb3d8ccb34/Nova.lua"
 local source
 if type(httpget) == "function" then source = httpget(url) else source = game:HttpGet(url) end
+if _G.ABAStartupToken~=startupToken then return end
 local wheelSource=table.concat({
     "    local function colorPopup(el, x, y, w, bottom)",
     "        local pw, ph = math.min(260, w), 220",
@@ -452,6 +452,50 @@ source,toggleLoadChanges=source:gsub('if el.Flag and saved%[el.Flag%] ~= nil the
 source,toggleSaveChanges=source:gsub('data%[flag%] = v',
     'if el.Kind ~= "Toggle" then data[flag] = v end',1)
 assert(toggleLoadChanges==1 and toggleSaveChanges==1,"Nova toggle persistence layout changed")
+local colorWheelImage
+pcall(function()
+    local wheelURL="https://raw.githubusercontent.com/7000000000000000a0-design/wtffloll3/main/assets/color-wheel.png"
+    if type(httpget)=="function" then colorWheelImage=httpget(wheelURL)else colorWheelImage=game:HttpGet(wheelURL)end
+end)
+local positionOffset,guiSizeOffset,visualEngineOffset,viewMatrixOffset,renderDimensionsOffset,partPrimitiveOffset,primitivePositionOffset
+-- Matcha's screen coordinates can be unreliable on rotated BillboardGui bars.
+-- The reference script reads the UDim2 X.Scale float instead; never write memory.
+if type(memory_read) == "function" then
+    local ok,data=pcall(function()
+        local body
+        if type(httpget)=="function" then body=httpget("https://offsets.imtheo.lol/Offsets.json")
+        else body=game:HttpGet("https://offsets.imtheo.lol/Offsets.json") end
+        return game:GetService("HttpService"):JSONDecode(body)
+    end)
+    if not ok or type(data)~="table" or type(data.Offsets)~="table" then
+        data=nil
+    else
+        for _,name in ipairs({"GuiObject","BasePart","Primitive","VisualEngine"}) do
+            if type(data.Offsets[name])~="table" then data.Offsets[name]=nil end
+        end
+    end
+    local value=ok and data and data.Offsets and data.Offsets.GuiObject and data.Offsets.GuiObject.Position
+    if type(value)=="string" then value=tonumber(value) end
+    if type(value)=="number" and value>0 and value<8192 and value%4==0 then positionOffset=value end
+    local sizeValue=ok and data and data.Offsets and data.Offsets.GuiObject and data.Offsets.GuiObject.Size
+    if type(sizeValue)=="string" then sizeValue=tonumber(sizeValue) end
+    if type(sizeValue)=="number" and sizeValue>0 and sizeValue<8192 and sizeValue%4==0 then guiSizeOffset=sizeValue end
+    local offsets=ok and data and data.Offsets
+    local primitive=offsets and offsets.BasePart and tonumber(offsets.BasePart.Primitive)
+    local position=offsets and offsets.Primitive and tonumber(offsets.Primitive.Position)
+    if primitive and position and primitive>0 and primitive<8192 and position>0 and position<8192 then
+        partPrimitiveOffset,primitivePositionOffset=primitive,position
+    end
+    local visual=ok and data and data.Offsets and data.Offsets.VisualEngine
+    if visual then
+        local pointer,matrix=tonumber(visual.Pointer),tonumber(visual.ViewMatrix)
+        if pointer and pointer>4096 and pointer<1073741824 and matrix and matrix>0 and matrix<8192 then
+            visualEngineOffset,viewMatrixOffset=pointer,matrix
+            renderDimensionsOffset=tonumber(visual.Dimensions)
+        end
+    end
+end
+if _G.ABAStartupToken~=startupToken then return end
 local previousNova,previousDrawings=_G.Nova,_G.ABATimingOwnedDrawings
 _G.ABATimingOwnedDrawings=ownedDrawings
 _G.Nova=nil
@@ -464,11 +508,6 @@ if not Nova or type(Nova.CreateWindow)~="function" then
 end
 _G.ABATimingOwnedDrawings=ownedDrawings
 _G.Nova=Nova
-local colorWheelImage
-pcall(function()
-    local wheelURL="https://raw.githubusercontent.com/7000000000000000a0-design/wtffloll3/main/assets/color-wheel.png"
-    if type(httpget)=="function" then colorWheelImage=httpget(wheelURL)else colorWheelImage=game:HttpGet(wheelURL)end
-end)
 local state
 local windowOK,window=pcall(function() return Nova:CreateWindow({Title="hahahahahaha", ColorWheelImage=colorWheelImage, Folder="hahahahahaha", ConfigName="menu-colors", ToggleKey="RightShift", Open=false, Size={480,380}, OnUnload=function()
     if state then state.Destroy() end
@@ -477,6 +516,10 @@ if not windowOK or not window then
     _G.Nova=previousNova;_G.ABATimingOwnedDrawings=previousDrawings
     clearOwnedDrawings();error("Menu construction failed; existing menu was preserved")
 end
+if _G.ABAStartupToken~=startupToken then
+    pcall(function() window:Destroy() end);clearOwnedDrawings();return
+end
+_G.ABAStartupToken=nil
 if old and old.Destroy then pcall(old.Destroy) end
 pcall(function() window:Toggle(true) end)
 if window.SettingsTab and window.SettingsTab.elements then
@@ -544,25 +587,28 @@ end
 local refreshServices
 local function connectFrame(signalName,callback,interval)
     interval=interval or 1/60
-    local stopped,lastError=false,nil
+    local stopped,lastError,running=false,nil,false
     local function dispatch(dt)
-        if stopped or not alive then return end
+        if stopped or not alive or running then return end
+        running=true
         drainPendingReleases()
         if refreshServices then pcall(refreshServices) end
         local ok,err=pcall(callback,dt)
+        running=false
         if not ok and tostring(err)~=lastError then
             lastError=tostring(err);print("[Update loop] "..lastError)
         elseif ok then lastError=nil end
     end
+    local lastSignal=tick and tick() or os.clock()
     local ok,connection=pcall(function()
         local service=game:GetService("RunService")
         local signal=service and service[signalName]
-        if signal then return signal:Connect(dispatch) end
+        if signal then return signal:Connect(function(dt)
+            lastSignal=tick and tick() or os.clock()
+            dispatch(dt)
+        end) end
     end)
     if ok and connection then
-        local lastSignal=tick and tick() or os.clock()
-        local original=callback
-        callback=function(dt) lastSignal=tick and tick() or os.clock();return original(dt) end
         if task and type(task.spawn)=="function" and type(task.wait)=="function" then
             task.spawn(function()
                 local previous=lastSignal
@@ -572,9 +618,7 @@ local function connectFrame(signalName,callback,interval)
                     drainPendingReleases()
                     local now=tick and tick() or os.clock()
                     if now-lastSignal>.1 then
-                        if refreshServices then pcall(refreshServices) end
-                        local success,err=pcall(original,math.max(0,now-previous))
-                        if not success and tostring(err)~=lastError then lastError=tostring(err);print("[Update loop] "..lastError) end
+                        dispatch(math.max(0,now-previous))
                     end
                     previous=now
                 end
@@ -609,7 +653,7 @@ local destroyPlayerESP
 local destroyPlayersTab
 local releaseMacroInputs
 local macroBusy=false
-local destroyInputBuffer,suspendInputBuffer
+local destroyInputBuffer,suspendInputBuffer,inputBufferToggleKey
 local destroyBlockWatcher,blockDetectionHeld,blockDetectionClaimsKey
 
 local function message(text)
@@ -859,37 +903,6 @@ destroyPlayersTab=mountPlayersTab()
 local armedUntil=0
 local lastKeys={}
 
-local positionOffset,guiSizeOffset,visualEngineOffset,viewMatrixOffset,renderDimensionsOffset,partPrimitiveOffset,primitivePositionOffset
--- Matcha's screen coordinates can be unreliable on rotated BillboardGui bars.
--- The reference script reads the UDim2 X.Scale float instead; never write memory.
-if type(memory_read) == "function" then
-    local ok,data=pcall(function()
-        local body
-        if type(httpget)=="function" then body=httpget("https://offsets.imtheo.lol/Offsets.json")
-        else body=game:HttpGet("https://offsets.imtheo.lol/Offsets.json") end
-        return game:GetService("HttpService"):JSONDecode(body)
-    end)
-    local value=ok and data and data.Offsets and data.Offsets.GuiObject and data.Offsets.GuiObject.Position
-    if type(value)=="string" then value=tonumber(value) end
-    if type(value)=="number" and value>0 and value<8192 and value%4==0 then positionOffset=value end
-    local sizeValue=ok and data and data.Offsets and data.Offsets.GuiObject and data.Offsets.GuiObject.Size
-    if type(sizeValue)=="string" then sizeValue=tonumber(sizeValue) end
-    if type(sizeValue)=="number" and sizeValue>0 and sizeValue<8192 and sizeValue%4==0 then guiSizeOffset=sizeValue end
-    local offsets=ok and data and data.Offsets
-    local primitive=offsets and offsets.BasePart and tonumber(offsets.BasePart.Primitive)
-    local position=offsets and offsets.Primitive and tonumber(offsets.Primitive.Position)
-    if primitive and position and primitive>0 and primitive<8192 and position>0 and position<8192 then
-        partPrimitiveOffset,primitivePositionOffset=primitive,position
-    end
-    local visual=ok and data and data.Offsets and data.Offsets.VisualEngine
-    if visual then
-        local pointer,matrix=tonumber(visual.Pointer),tonumber(visual.ViewMatrix)
-        if pointer and pointer>4096 and pointer<1073741824 and matrix and matrix>0 and matrix<8192 then
-            visualEngineOffset,viewMatrixOffset=pointer,matrix
-            renderDimensionsOffset=tonumber(visual.Dimensions)
-        end
-    end
-end
 local function readRatio(bar,cutter)
     local ok,value=pcall(function()return cutter.Position.X.Scale end)
     if ok and type(value)=="number" and value>=0 and value<=1 then return value,"local" end
@@ -1365,7 +1378,7 @@ end})
 local function macroTap(vk)
     macroHeldKeys[vk]=true;claimInput(vk)
     local result=keypress(vk)
-    if not releaseOwnedInput(vk) then return end
+    if not releaseOwnedInput(vk) then error("Key release failed; macro cancelled") end
     macroHeldKeys[vk]=nil
     if result==false then error("Keypress API rejected input") end
 end
@@ -1414,6 +1427,7 @@ local function mountInputBuffer()
             toggle:Set(not toggle.Value)
             pcall(showToggleNotice,toggle.Value,"Input buffer")
         end})
+    inputBufferToggleKey=toggleKey
     for _,input in ipairs(inputs) do
         local selected=input
         selected.toggle=page:Toggle({Name="Buffer "..selected.name,Default=true,
@@ -1958,10 +1972,12 @@ local function runUptiltMacro(profile, isSelected)
         local function active() return alive and macrosOn and isSelected() and macroInputAllowed() end
         local ok,err=pcall(function()
             if not active() then return end
-            mouseHeld=true;macroMouseHeld=true;claimInput(1);mouse1press()
+            mouseHeld=true;macroMouseHeld=true;claimInput(1)
+            if mouse1press()==false then error("Mouse press API rejected input") end
             task.wait(.230)
             if not active() then return end
-            spaceHeld=true;macroHeldKeys[0x20]=true;claimInput(0x20);keypress(0x20)
+            spaceHeld=true;macroHeldKeys[0x20]=true;claimInput(0x20)
+            if keypress(0x20)==false then error("Keypress API rejected input") end
             task.wait(.210)
             if not active() then return end
             macroTap(0x33)
@@ -2280,9 +2296,16 @@ local function mountHeadRide()
     end
 
     local function sameTeam(plr)
+        if safe(function() return LocalPlayer.Neutral end,false)==true
+            or safe(function() return plr.Neutral end,false)==true then return false end
         local a = safe(function() return LocalPlayer.Team end, nil)
         local b = safe(function() return plr.Team end, nil)
         if a == nil or b == nil then return false end
+        local an=type(a)=="string" and a or safe(function() return a.Name end,nil)
+        local bn=type(b)=="string" and b or safe(function() return b.Name end,nil)
+        if type(an)=="string" and type(bn)=="string" then
+            return an~="" and an:lower()~="neutral" and an:lower()==bn:lower()
+        end
         return a == b
     end
 
@@ -2683,9 +2706,13 @@ local function mountHeadRide()
     end
 
     controls.ride_on = tab:Toggle({Name = "Enabled", Default = false})
-    tab:Keybind({
-        Name = "Toggle Head Ride", Default = "F3", Mode = "Press", Flag = "ride_toggle_key",
+    local rideToggleKey
+    rideToggleKey=tab:Keybind({
+        Name = "Toggle Head Ride", Default = "F8", Mode = "Press", Flag = "ride_toggle_key",
         Callback = function()
+            if inputBufferToggleKey and rideToggleKey and inputBufferToggleKey.Value==rideToggleKey.Value then
+                notify("Choose a Head Ride toggle key different from the Input Buffer toggle key.","Keybind conflict");return
+            end
             if macroInputAllowed() then
                 local enabled = controls.ride_on
                 enabled:Set(not enabled.Value)
@@ -3394,7 +3421,7 @@ local function mountPlayerESP()
     end
     local function cooldownSeconds(state,now)
         if not state or not state.active or not number(state.endsAt) then return nil end
-        if not number(state.progressAt) or now-state.progressAt>.5 then return nil end
+        if not number(state.seen) or now-state.seen>.5 then return nil end
         local remaining=math.max(0,state.endsAt-now)
         local seconds=math.max(1,math.ceil(remaining-.000001))
         if state.displayCycle~=state.cycle then
@@ -3527,6 +3554,12 @@ local function mountPlayerESP()
         return nil
     end
     local function activeMode(player,character,record)
+        local function modeStateFlag(value,key)
+            -- "Mode" is also used by numeric charge meters. Only boolean
+            -- state can decide awakening for that ambiguous field.
+            if key=="Mode" and type(value)=="number" then return nil end
+            return guardbreakBoolean(value)
+        end
         -- Prefer explicit replicated state. A full charge alone is not mode.
         local previous=record.previousModeCharge
         record.previousModeCharge=record.mode
@@ -3542,12 +3575,12 @@ local function mountPlayerESP()
             local container=containers[i]
             if container then
                 for _,key in ipairs({"InMode","ModeActive","Awakened","UsingMode","AwakeningActive","IsAwakened","UltimateActive","Mode"}) do
-                    local flag=guardbreakBoolean(attribute(container,key))
+                    local flag=modeStateFlag(attribute(container,key),key)
                     if flag~=nil then return flag end
                     local marker=child(container,key)
                     if marker then
                         local ok,value=pcall(function() return marker.Value end)
-                        if ok then flag=guardbreakBoolean(value) else flag=nil end
+                        if ok then flag=modeStateFlag(value,key) else flag=nil end
                         if flag~=nil then return flag end
                         local class=marker.ClassName
                         if class=="Folder" or class=="Configuration" then return true end
@@ -3804,7 +3837,7 @@ local function mountPlayerESP()
             if number(move.cd) and move.cd<20 and history and number(history.endsAt) then
                 move.cooldownEndsAt=history.endsAt
                 move.cooldownSeconds=cooldownSeconds(history,now)
-                move.cooldownFreshUntil=(history.progressAt or now)+.5
+                move.cooldownFreshUntil=(history.seen or now)+.5
             end
         end
         if record then
@@ -4605,7 +4638,7 @@ local function mountPlayerESP()
                 local hpText=object(row,"HealthText","Text")
                 local hpSize=math.max(8,math.floor(12*scale+.5))
                 set(hpText,"Size",hpSize);set(hpText,"Center",true);set(hpText,"ZIndex",904)
-                label(row,"HealthText",string.format("%d / %d",math.ceil(data.health),math.ceil(data.maxHealth)),
+                label(row,"HealthText",string.format("%.0f / %.0f",math.ceil(data.health),math.ceil(data.maxHealth)),
                     x+width/2,y+(23+15/2)*scale+headerShift,white)
             end
             sidebarMeter(row,"Mode",data.mode,x+4*scale,y+44*scale+headerShift,width-8*scale,12*scale,10,sidebarModeRed,scale)
