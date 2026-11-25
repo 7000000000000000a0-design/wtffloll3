@@ -4224,11 +4224,17 @@ local function mountPlayerESP()
     end
     local function spectatorState(player)
         local teamName
-        pcall(function() teamName=player.Team.Name:lower() end)
+        pcall(function()
+            local team=player.Team
+            teamName=type(team)=="string" and team or team.Name
+        end)
         if type(teamName)=="string" then
+            teamName=teamName:lower():gsub("[^%w]","")
             if teamName:find("spectat",1,true) then return "Spectator" end
             if teamName:find("bench",1,true) then return "Benched" end
-            if teamName=="afk" then return "AFK" end
+            -- ABA's leaderboard uses both "AFK" and ".AFK".
+            if teamName:find("afk",1,true) then return "AFK" end
+            if teamName:find("lobby",1,true) or teamName:find("waiting",1,true) then return "Lobby" end
         end
         local character
         pcall(function() character=player.Character end)
@@ -4261,8 +4267,9 @@ local function mountPlayerESP()
         if type(team)=="string" then name=team
         elseif team then pcall(function() name=team.Name end) end
         if type(name)~="string" or name=="" then return nil end
-        name=name:lower()
-        if name=="neutral" then return nil end
+        name=name:lower():match("^%s*(.-)%s*$")
+        local normalized=name:gsub("[^%w]","")
+        if normalized=="" or normalized=="neutral" then return nil end
         return name
     end
     local function refreshESPView(list,now)
@@ -4276,7 +4283,7 @@ local function mountPlayerESP()
             teams[key]=espTeamKey(player)
             roles[key]=spectatorState(player)
             byName[key]=player
-            if player~=me and not roles[key] then options[#options+1]=key end
+            if player~=me and not roles[key] and teams[key] then options[#options+1]=key end
             local character
             pcall(function() character=player.Character end)
             if character then
@@ -4313,13 +4320,13 @@ local function mountPlayerESP()
         -- Resolve only current camera evidence. A saved team reference is never
         -- evidence of which player the camera is currently following.
         if spectating then
-            if watched and (watched==me or roles[playerKey(watched)]) then watched=nil end
+            if watched and (watched==me or roles[playerKey(watched)] or not teams[playerKey(watched)]) then watched=nil end
             local focus
             pcall(function() focus=camera.Focus.Position end)
             if focus then
                 local focused,nearest,second,subjectDistance
                 for _,player in ipairs(list) do
-                    if player~=me and not roles[playerKey(player)] then
+                    if player~=me and not roles[playerKey(player)] and teams[playerKey(player)] then
                         local ok,distance=pcall(function()
                             local root=child(player.Character,"HumanoidRootPart")
                             return root and (root.Position-focus).Magnitude
@@ -4346,7 +4353,7 @@ local function mountPlayerESP()
         if spectating then
             local choice=tostring(teamReference.Value or "Auto")
             reference=choice~="Auto" and byName[choice] or watched
-            if reference and roles[playerKey(reference)] then reference=nil end
+            if reference and (roles[playerKey(reference)] or not teams[playerKey(reference)]) then reference=nil end
         end
         local referenceKey=reference and playerKey(reference)
         espView={spectating=spectating,teams=teams,roles=roles,reference=reference,
@@ -4362,7 +4369,9 @@ local function mountPlayerESP()
         if isPlayerWhitelisted(player) then return false end
         local key=playerKey(player)
         if espView.spectating then
-            if not spectatingOn.Value or espView.roles[key] then return false end
+            -- Only match participants belong in spectator ESP. An avatar can
+            -- still be alive elsewhere in the map while AFK, neutral or benched.
+            if not spectatingOn.Value or espView.roles[key] or not espView.teams[key] then return false end
         end
         if teamFilter.Value and player~=players.LocalPlayer and espView.team then
             local team=espView.teams[key]
