@@ -2791,16 +2791,19 @@ local function mountPlayerESP()
     local movesOn=espTab:Toggle({Name="Move cooldown ESP",Default=true,Flag="player_move_esp"})
     local moveSize=espTab:Slider({Name="Move box size (%)",Min=25,Max=200,Default=100,Increment=5,Flag="player_move_esp_size"})
     local selfOn=espTab:Toggle({Name="Show yourself",Default=false,Flag="player_esp_show_self"})
+    local spectatorsOn=espTab:Toggle({Name="Show spectators",Default=false,Flag="player_esp_spectators"})
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
     local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
     local records={}
     local sidebarRecords={}
-    local sidebarPage=1
+    local sidebarPage,spectatorPage=1,1
+    local spectatorSamples,spectatorRecords={},{}
+    local spectatorList={drawings={},used={}}
     espTab:Keybind({Name="Next sidebar page",Default="F6",Mode="Press",Flag="sidebar_next_page",Callback=function()
-        if robloxFocused() and not robloxTextFocused() then sidebarPage=sidebarPage+1 end
+        if robloxFocused() and not robloxTextFocused() then sidebarPage=sidebarPage+1;spectatorPage=spectatorPage+1 end
     end})
     espTab:Keybind({Name="Previous sidebar page",Default="F7",Mode="Press",Flag="sidebar_previous_page",Callback=function()
-        if robloxFocused() and not robloxTextFocused() then sidebarPage=math.max(1,sidebarPage-1) end
+        if robloxFocused() and not robloxTextFocused() then sidebarPage=math.max(1,sidebarPage-1);spectatorPage=math.max(1,spectatorPage-1) end
     end})
     local sidebarFooter={drawings={},used={}}
     local drawingValues={}
@@ -4270,6 +4273,49 @@ local function mountPlayerESP()
             print("[ESP] "..tostring(player.Name)..": "..message)
         end
     end
+    local function spectatorState(player)
+        local teamName
+        pcall(function() teamName=player.Team.Name:lower() end)
+        if type(teamName)=="string" then
+            if teamName:find("spectat",1,true) then return "Spectator" end
+            if teamName:find("bench",1,true) then return "Benched" end
+            if teamName=="afk" then return "AFK" end
+        end
+        local character
+        pcall(function() character=player.Character end)
+        for _,container in pairs({player,character}) do
+            for _,key in ipairs({"Spectating","Spectator","IsSpectator","SpectatorMode"}) do
+                local ok,value=pcall(function() return container:GetAttribute(key) end)
+                if ok and value==true then return "Spectator" end
+                local marker=child(container,key)
+                pcall(function() value=marker and marker.Value end)
+                if value==true then return "Spectator" end
+            end
+        end
+        local gui=child(child(player,"PlayerGui"),"Spectate")
+        if gui then
+            local disabled=false
+            pcall(function() disabled=gui.Enabled==false or gui.Visible==false end)
+            if not disabled then return "Spectator" end
+        end
+        return nil
+    end
+    local nextSpectatorRead=0
+    local function refreshSpectators(list,now)
+        if not spectatorsOn.Value then spectatorSamples={};return end
+        if now<nextSpectatorRead then return end
+        nextSpectatorRead=now+.25
+        local found={}
+        local me=players.LocalPlayer
+        for _,player in ipairs(list) do
+            if (player~=me or selfOn.Value) and not isPlayerWhitelisted(player) then
+                local ok,state=pcall(spectatorState,player)
+                if ok and state then found[#found+1]={player=player,identity=playerKey(player),state=state} end
+            end
+        end
+        table.sort(found,function(a,b) return a.identity<b.identity end)
+        spectatorSamples=found
+    end
     local lastRefreshError
     local function refreshPlayerData()
         while not stopped and alive do
@@ -4278,6 +4324,7 @@ local function mountPlayerESP()
             local ok,list=pcall(function() return players:GetPlayers() end)
             if ok and type(list)=="table" then
                 latestPlayerList=list
+                refreshSpectators(list,tick and tick() or os.clock())
                 local present={}
                 local me=playerKey(players.LocalPlayer)
                 local batchStarted=tick and tick() or os.clock()
@@ -4309,12 +4356,12 @@ local function mountPlayerESP()
                     if sidebarRecords[identity] then release(sidebarRecords[identity]);sidebarRecords[identity]=nil end
                 end
             else
-                preparedPlayers={}
+                preparedPlayers={};spectatorSamples={}
                 for _,record in pairs(records) do hide(record) end
             end
             end)
             if not passOK then
-                preparedPlayers={}
+                preparedPlayers={};spectatorSamples={}
                 for _,record in pairs(records) do hide(record) end
                 if lastRefreshError~=tostring(passError) then
                     lastRefreshError=tostring(passError);print("[ESP refresh] "..lastRefreshError)
@@ -4481,9 +4528,73 @@ local function mountPlayerESP()
                 layout.left+layout.width/2,layout.top+layout.rows*layout.rowHeight,white)
         end
     end
+    local function hideSpectators()
+        hide(spectatorList)
+        for _,record in pairs(spectatorRecords) do hide(record) end
+    end
+    local function renderSpectators()
+        if not spectatorsOn.Value or #spectatorSamples==0 then hideSpectators();return end
+        local camera=world.CurrentCamera
+        if not camera then hideSpectators();return end
+        local view=camera.ViewportSize
+        local scale=math.max(.65,math.min(1.3,view.Y/900))
+        local width=math.min(260*scale,view.X*.30)
+        local x,y=view.X-width-16*scale,view.Y*.20
+        local rows=math.max(1,math.floor((view.Y-y-56*scale)/(22*scale)))
+        local entries={}
+        local present={}
+        local frame=screenProjection(camera,true)
+        local me=players.LocalPlayer
+        local origin=child(me and me.Character,"HumanoidRootPart")
+        for _,entry in ipairs(spectatorSamples) do
+            if (entry.player~=me or selfOn.Value) and not isPlayerWhitelisted(entry.player) then
+                entries[#entries+1]=entry;present[entry.identity]=true
+                local record=spectatorRecords[entry.identity]
+                if not record then record={drawings={},used={}};spectatorRecords[entry.identity]=record end
+                hide(record);record.used={}
+                pcall(function()
+                    local character=entry.player.Character
+                    local root=child(character,"HumanoidRootPart") or child(character,"Head")
+                    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+                    if not root or not frame or (humanoid and humanoid.Health<=0) then return end
+                    local distance=(root.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude
+                    if not number(distance) or distance>range.Value then return end
+                    local point,visible=projectToScreen(root.Position+Vector3.new(0,3,0),camera,frame)
+                    if not point or visible==false or not number(point.X) or not number(point.Y)
+                        or point.X<0 or point.Y<0 or point.X>view.X or point.Y>view.Y then return end
+                    local text=displayNameFor(entry.player,entry.identity).." ["..entry.state.."]"
+                    local drawing=object(record,"Name","Text")
+                    set(drawing,"Size",math.floor(14*scale+.5));set(drawing,"Center",true)
+                    label(record,"Name",text,point.X,point.Y,secondPurple)
+                end)
+            end
+        end
+        local removed={}
+        for identity in pairs(spectatorRecords) do if not present[identity] then removed[#removed+1]=identity end end
+        for _,identity in ipairs(removed) do release(spectatorRecords[identity]);spectatorRecords[identity]=nil end
+        hide(spectatorList);spectatorList.used={}
+        if #entries==0 then return end
+        local pages=math.max(1,math.ceil(#entries/rows))
+        spectatorPage=math.max(1,math.min(pages,spectatorPage))
+        local header=object(spectatorList,"Header","Text")
+        set(header,"Size",math.floor(15*scale+.5));set(header,"Center",false)
+        label(spectatorList,"Header","Spectators ("..#entries..")"..(pages>1 and " · "..spectatorPage.."/"..pages or ""),x,y,secondPurple)
+        local first=(spectatorPage-1)*rows+1
+        for index=first,math.min(#entries,first+rows-1) do
+            local entry=entries[index]
+            local text=displayNameFor(entry.player,entry.identity).." · "..entry.state
+            local key="Player"..(index-first+1)
+            local drawing=object(spectatorList,key,"Text")
+            set(drawing,"Size",math.max(6,math.floor(math.min(13*scale,width/(math.max(1,#text)*.62)))))
+            set(drawing,"Center",false)
+            label(spectatorList,key,text,x,y+(index-first+1)*22*scale,white)
+        end
+    end
     local sidebarLastError
     local function renderESP()
         if stopped or not alive then return end
+        local spectatorOK=pcall(renderSpectators)
+        if not spectatorOK then hideSpectators() end
         local sidebarOK,sidebarError=pcall(renderSidebar)
         if not sidebarOK then
             hideSidebar()
@@ -4570,6 +4681,9 @@ local function mountPlayerESP()
         for _,record in pairs(records) do release(record) end
         for _,record in pairs(sidebarRecords) do release(record) end
         release(sidebarFooter)
+        for _,record in pairs(spectatorRecords) do release(record) end
+        release(spectatorList)
+        spectatorRecords={};spectatorSamples={}
         sidebarRecords={};records={}
     end
 end
