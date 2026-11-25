@@ -2793,6 +2793,8 @@ local function mountPlayerESP()
     local selfOn=espTab:Toggle({Name="Show yourself",Default=false,Flag="player_esp_show_self"})
     local spectatorsOn=espTab:Toggle({Name="Spectator list / markers",Default=false,Flag="player_esp_spectators"})
     local teamFilter=espTab:Toggle({Name="Hide teammates",Default=false,Flag="player_esp_hide_team"})
+    local teamReference=espTab:Dropdown({Name="Spectator team reference",Options={"Auto"},Default="Auto",Flag="player_esp_team_reference"})
+    local teamStatus=espTab:Paragraph({Name="Team filter",Content="Uses your team while playing and the watched player's team while spectating."})
     local range=espTab:Slider({Name="Maximum distance",Min=100,Max=3000,Default=1000,Increment=50,Flag="player_esp_range"})
     local records={}
     local sidebarRecords={}
@@ -4156,6 +4158,145 @@ local function mountPlayerESP()
         local stateY=y+h-stateSize-padding
         if not ready then text("State",state,x+w/2,stateY,stateSize,true) end
     end
+    local function spectatorState(player)
+        local teamName
+        pcall(function() teamName=player.Team.Name:lower() end)
+        if type(teamName)=="string" then
+            if teamName:find("spectat",1,true) then return "Spectator" end
+            if teamName:find("bench",1,true) then return "Benched" end
+            if teamName=="afk" then return "AFK" end
+        end
+        local character
+        pcall(function() character=player.Character end)
+        for _,container in pairs({player,character}) do
+            for _,key in ipairs({"Spectating","Spectator","IsSpectator","SpectatorMode"}) do
+                local ok,value=pcall(function() return container:GetAttribute(key) end)
+                if ok and value==true then return "Spectator" end
+                local marker=child(container,key)
+                pcall(function() value=marker and marker.Value end)
+                if value==true then return "Spectator" end
+            end
+        end
+        local gui=child(child(player,"PlayerGui"),"Spectate")
+        if gui then
+            local disabled=false
+            pcall(function() disabled=gui.Enabled==false or gui.Visible==false end)
+            if not disabled then return "Spectator" end
+        end
+        return nil
+    end
+    local espView={spectating=false,teams={},roles={},reference=nil,team=nil}
+    local nextESPViewRead,teamReferenceSignature,lastTeamStatus=0,nil,nil
+    local function espTeamKey(player)
+        local neutral
+        pcall(function() neutral=player.Neutral end)
+        if neutral==true then return nil end
+        local team
+        pcall(function() team=player.Team end)
+        local name
+        if type(team)=="string" then name=team
+        elseif team then pcall(function() name=team.Name end) end
+        if type(name)~="string" or name=="" then return nil end
+        name=name:lower()
+        if name=="neutral" then return nil end
+        return name
+    end
+    local function refreshESPView(list,now)
+        if now<nextESPViewRead then return end
+        nextESPViewRead=now+.1
+        local me=players.LocalPlayer
+        local teams,roles,owners,byName={},{},{},{}
+        local options={}
+        for _,player in ipairs(list) do
+            local key=playerKey(player)
+            teams[key]=espTeamKey(player)
+            roles[key]=spectatorState(player)
+            byName[key]=player
+            if player~=me and not roles[key] then options[#options+1]=key end
+            local character
+            pcall(function() character=player.Character end)
+            if character then
+                owners[characterKey(character)]=player
+                local root=child(character,"HumanoidRootPart")
+                local hum
+                pcall(function() hum=character:FindFirstChildOfClass("Humanoid") end)
+                if root then owners[characterKey(root)]=player end
+                if hum then owners[characterKey(hum)]=player end
+            end
+        end
+        table.sort(options);table.insert(options,1,"Auto")
+        local signature=table.concat(options,"\0")
+        if signature~=teamReferenceSignature then teamReference:Refresh(options,true);teamReferenceSignature=signature end
+        local camera=world.CurrentCamera
+        local subject,watched
+        pcall(function() subject=camera.CameraSubject end)
+        for _=1,8 do
+            if not subject then break end
+            watched=owners[characterKey(subject)]
+            if watched then break end
+            local parent
+            pcall(function() parent=subject.Parent end)
+            if parent==subject then break end
+            subject=parent
+        end
+        local inactive=true
+        pcall(function()
+            local character=me.Character
+            local hum=character and character:FindFirstChildOfClass("Humanoid")
+            inactive=not character or not hum or hum.Health<=0
+        end)
+        local spectating=roles[playerKey(me)]~=nil or (inactive and watched~=nil and watched~=me)
+        local reference=me
+        if spectating then
+            local choice=tostring(teamReference.Value or "Auto")
+            if choice~="Auto" then reference=byName[choice]
+            else
+                reference=watched
+                if reference and roles[playerKey(reference)] then reference=nil end
+                if not reference then
+                    -- Focus is useful on runtimes without CameraSubject; reject
+                    -- ambiguous groups rather than choosing an enemy at random.
+                    local focus
+                    pcall(function() focus=camera.Focus.Position end)
+                    if focus then
+                        local nearest,second
+                        for _,player in ipairs(list) do
+                            if player~=me and not roles[playerKey(player)] then
+                                local ok,distance=pcall(function()
+                                    local root=child(player.Character,"HumanoidRootPart")
+                                    return root and (root.Position-focus).Magnitude
+                                end)
+                                if ok and number(distance) then
+                                    if not nearest or distance<nearest then second=nearest;nearest=distance;reference=player
+                                    elseif not second or distance<second then second=distance end
+                                end
+                            end
+                        end
+                        if not nearest or nearest>12 or (second and second-nearest<2) then reference=nil end
+                    end
+                end
+                if not reference and espView.reference and byName[playerKey(espView.reference)]
+                    and not roles[playerKey(espView.reference)] then reference=byName[playerKey(espView.reference)] end
+            end
+        end
+        local referenceKey=reference and playerKey(reference)
+        espView={spectating=spectating,teams=teams,roles=roles,reference=reference,team=referenceKey and teams[referenceKey]}
+        local text
+        if not spectating then text="Playing · using your team"
+        elseif reference then text="Watching "..displayNameFor(reference,referenceKey).." · "..tostring(espView.team or "no team")
+        else text="Spectating · select a Spectator team reference to hide teammates" end
+        if text~=lastTeamStatus then pcall(function() teamStatus:Set(text) end);lastTeamStatus=text end
+    end
+    local function espPlayerVisible(player)
+        if isPlayerWhitelisted(player) then return false end
+        local key=playerKey(player)
+        if espView.spectating and espView.roles[key] then return false end
+        if teamFilter.Value and player~=players.LocalPlayer and espView.team then
+            local team=espView.teams[key]
+            if team and team==espView.team then return false end
+        end
+        return true
+    end
     local function espViewOrigin(camera)
         -- Visibility range follows the view, including spectating/freecam.
         -- An inactive local avatar can be parked far outside the arena.
@@ -4180,7 +4321,7 @@ local function mountPlayerESP()
         end
         if not modeOn.Value and not movesOn.Value then hide(record);return end
         local me=players.LocalPlayer
-        if teamFilter.Value and me and playerKey(player)~=playerKey(me) and me.Team~=nil and player.Team==me.Team then hide(record);return end
+        if not espPlayerVisible(player) then hide(record);return end
         local head=child(character,"Head") or child(character,"HumanoidRootPart")
         local root=child(character,"HumanoidRootPart") or child(character,"UpperTorso") or child(character,"Torso")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
@@ -4195,7 +4336,7 @@ local function mountPlayerESP()
             local origin=espViewOrigin(camera)
             return (head.Position-origin).Magnitude
         end)
-        if okDistance and number(distance) and distance>range.Value then hide(record);return end
+        if not espView.spectating and okDistance and number(distance) and distance>range.Value then hide(record);return end
         if now>=record.nextRead then
             if modeOn.Value then
                 local success,value=pcall(readMode,player,character)
@@ -4288,33 +4429,6 @@ local function mountPlayerESP()
             print("[ESP] "..tostring(player.Name)..": "..message)
         end
     end
-    local function spectatorState(player)
-        local teamName
-        pcall(function() teamName=player.Team.Name:lower() end)
-        if type(teamName)=="string" then
-            if teamName:find("spectat",1,true) then return "Spectator" end
-            if teamName:find("bench",1,true) then return "Benched" end
-            if teamName=="afk" then return "AFK" end
-        end
-        local character
-        pcall(function() character=player.Character end)
-        for _,container in pairs({player,character}) do
-            for _,key in ipairs({"Spectating","Spectator","IsSpectator","SpectatorMode"}) do
-                local ok,value=pcall(function() return container:GetAttribute(key) end)
-                if ok and value==true then return "Spectator" end
-                local marker=child(container,key)
-                pcall(function() value=marker and marker.Value end)
-                if value==true then return "Spectator" end
-            end
-        end
-        local gui=child(child(player,"PlayerGui"),"Spectate")
-        if gui then
-            local disabled=false
-            pcall(function() disabled=gui.Enabled==false or gui.Visible==false end)
-            if not disabled then return "Spectator" end
-        end
-        return nil
-    end
     local nextSpectatorRead=0
     local function refreshSpectators(list,now)
         if not spectatorsOn.Value then spectatorSamples={};return end
@@ -4339,6 +4453,7 @@ local function mountPlayerESP()
             local ok,list=pcall(function() return players:GetPlayers() end)
             if ok and type(list)=="table" then
                 latestPlayerList=list
+                refreshESPView(list,tick and tick() or os.clock())
                 refreshSpectators(list,tick and tick() or os.clock())
                 local present={}
                 local me=playerKey(players.LocalPlayer)
@@ -4464,7 +4579,7 @@ local function mountPlayerESP()
         local view=camera.ViewportSize
         local entries={}
         for identity,sample in pairs(preparedPlayers) do
-            if not isPlayerWhitelisted(sample.player) then entries[#entries+1]={identity=identity,sample=sample} end
+            if espPlayerVisible(sample.player) then entries[#entries+1]={identity=identity,sample=sample} end
         end
         -- Alphabetical order is independent of camera direction and distance.
         table.sort(entries,function(a,b) return a.identity<b.identity end)
@@ -4632,7 +4747,7 @@ local function mountPlayerESP()
         -- Only current root positions, one camera and drawing updates run here.
         -- No GetPlayers, move discovery, HUD scans, tags or rig-size reads.
         for _,cached in pairs(preparedPlayers) do
-            if isPlayerWhitelisted(cached.player) then hide(cached.record)
+            if not espPlayerVisible(cached.player) then hide(cached.record)
             else
                 local sample={player=cached.player,record=cached.record,character=cached.character,root=cached.root}
                 local success,position=pcall(freshRootPosition,sample.root)
