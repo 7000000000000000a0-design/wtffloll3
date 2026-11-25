@@ -4244,47 +4244,51 @@ local function mountPlayerESP()
             inactive=not character or not hum or hum.Health<=0
         end)
         local spectating=roles[playerKey(me)]~=nil or (inactive and watched~=nil and watched~=me)
+        -- Resolve only current camera evidence. A saved team reference is never
+        -- evidence of which player the camera is currently following.
+        if spectating then
+            if watched and (watched==me or roles[playerKey(watched)]) then watched=nil end
+            local focus
+            pcall(function() focus=camera.Focus.Position end)
+            if focus then
+                local focused,nearest,second,subjectDistance
+                for _,player in ipairs(list) do
+                    if player~=me and not roles[playerKey(player)] then
+                        local ok,distance=pcall(function()
+                            local root=child(player.Character,"HumanoidRootPart")
+                            return root and (root.Position-focus).Magnitude
+                        end)
+                        if ok and number(distance) then
+                            if watched and playerKey(player)==playerKey(watched) then subjectDistance=distance end
+                            if not nearest or distance<nearest then
+                                second=nearest;nearest=distance;focused=player
+                            elseif not second or distance<second then second=distance end
+                        end
+                    end
+                end
+                local clearFocus=nearest and nearest<=6 and (not second or second-nearest>=2)
+                if not watched then
+                    if clearFocus then watched=focused end
+                elseif subjectDistance and subjectDistance>12 then
+                    -- Scripted spectator cameras can leave CameraSubject pointing
+                    -- at the old fighter after changing their actual focus.
+                    watched=clearFocus and focused or nil
+                end
+            end
+        end
         local reference=me
         if spectating then
             local choice=tostring(teamReference.Value or "Auto")
-            if choice~="Auto" then reference=byName[choice]
-            else
-                reference=watched
-                if reference and roles[playerKey(reference)] then reference=nil end
-                if not reference then
-                    -- Focus is useful on runtimes without CameraSubject; reject
-                    -- ambiguous groups rather than choosing an enemy at random.
-                    local focus
-                    pcall(function() focus=camera.Focus.Position end)
-                    if focus then
-                        local nearest,second
-                        for _,player in ipairs(list) do
-                            if player~=me and not roles[playerKey(player)] then
-                                local ok,distance=pcall(function()
-                                    local root=child(player.Character,"HumanoidRootPart")
-                                    return root and (root.Position-focus).Magnitude
-                                end)
-                                if ok and number(distance) then
-                                    if not nearest or distance<nearest then second=nearest;nearest=distance;reference=player
-                                    elseif not second or distance<second then second=distance end
-                                end
-                            end
-                        end
-                        if not nearest or nearest>12 or (second and second-nearest<2) then reference=nil end
-                    end
-                end
-                if not reference and espView.reference and byName[playerKey(espView.reference)]
-                    and not roles[playerKey(espView.reference)] then reference=byName[playerKey(espView.reference)] end
-            end
+            reference=choice~="Auto" and byName[choice] or watched
+            if reference and roles[playerKey(reference)] then reference=nil end
         end
         local referenceKey=reference and playerKey(reference)
-        local watchedPlayer=watched
-        if watchedPlayer and roles[playerKey(watchedPlayer)] then watchedPlayer=nil end
         espView={spectating=spectating,teams=teams,roles=roles,reference=reference,
-            watched=spectating and (watchedPlayer or reference) or nil,team=referenceKey and teams[referenceKey]}
+            watched=spectating and watched or nil,team=referenceKey and teams[referenceKey]}
         local text
         if not spectating then text="Playing · using your team"
-        elseif reference then text="Watching "..displayNameFor(reference,referenceKey).." · "..tostring(espView.team or "no team")
+        elseif watched then text="Watching "..displayNameFor(watched,playerKey(watched)).." · team filter: "..tostring(espView.team or "no team")
+        elseif reference then text="Spectating · team reference: "..displayNameFor(reference,referenceKey)
         else text="Spectating · select a Spectator team reference to hide teammates" end
         if text~=lastTeamStatus then pcall(function() teamStatus:Set(text) end);lastTeamStatus=text end
     end
