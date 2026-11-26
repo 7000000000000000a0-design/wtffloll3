@@ -918,99 +918,15 @@ end
 -- Other explicit reaction checks found in .RunOnceLocal.
 local flashTab=tab
 
-local flash={last=nil,minimum=math.huge,descending=false,fired=false}
-local cameraTimingsOn=false
--- Shared zoom timing detector. Character names are deliberately not a whitelist:
--- any move using the shared camera cue is handled, including repeated cues.
--- This infers an input cue from camera motion; ordinary cinematic zooms may match too.
-local function newCameraTimingDetector()
-    local state
-    local function reset(camera,fov,now)
-        state={camera=camera,last=fov,baseline=fov,extreme=fov,time=now,direction=0,returning=false}
-    end
-    return function(camera,fov,now)
-        if not camera or type(fov)~="number" or fov~=fov or fov<=0 or fov>=180 then
-            state=nil;return false
-        end
-        if not state or state.camera~=camera or now-state.time>.25 or now<state.time then
-            reset(camera,fov,now);return false
-        end
-        local previous=state.last
-        local delta=fov-previous
-        state.last=fov;state.time=now
-        if state.returning then
-            local crossed=(fov-state.baseline)*state.direction<=.25
-            if crossed then reset(camera,fov,now);return false end
-            if delta*state.direction>.005 then
-                -- A new pulse may begin before the preceding cue returns to 70 FOV.
-                state.baseline=previous;state.extreme=fov
-                state.direction=math.abs(delta)>=1.5 and (delta>0 and 1 or -1) or 0
-                state.returning=false
-            end
-            return false
-        end
-        if state.direction==0 then
-            local distance=fov-state.baseline
-            if math.abs(distance)>=1.5 then
-                state.direction=distance>0 and 1 or -1;state.extreme=fov
-            end
-            return false
-        end
-        if (fov-state.extreme)*state.direction>0 then state.extreme=fov end
-        if delta*state.direction<-.0001 and (state.extreme-fov)*state.direction>=.005 then
-            state.returning=true
-            return true
-        end
-        return false
-    end
-end
-local detectCameraTiming=newCameraTimingDetector()
-
 local function timingIdentity(object)
     if not object then return nil end
     local ok,address=pcall(function() return object.Address end)
     if ok and type(address)=="number" and address==address and address>0 and address<math.huge then return address end
     return object
 end
-local function newBlackFlashDetector()
-    local state
-    local function detect(camera,fov,character,skill,now)
-        -- BlackFlashCheck.OnClientInvoke owns the local 6-FOV cue. It does not
-        -- create a UsingSkill value, so that marker cannot be a prerequisite.
-        if not camera or not character or type(now)~="number" or now~=now
-            or type(fov)~="number" or fov~=fov or fov<=0 or fov>=180 then state=nil;return false end
-        local cameraKey,characterKey=timingIdentity(camera),timingIdentity(character)
-        if not state or state.camera~=cameraKey or state.character~=characterKey
-            or now-state.seen>.25 or now<state.seen then
-            state={camera=cameraKey,character=characterKey,last=fov,minimum=fov,seen=now}
-            return false
-        end
-        local previous=state.last
-        if state.fired and previous>=12 and fov<previous-.01 then
-            -- A second pulse can start before the previous one reaches 70 FOV.
-            state.minimum=fov;state.fired=false;state.started=true;state.cueAt=nil
-        end
-        state.last=fov;state.seen=now;state.minimum=math.min(state.minimum,fov)
-        if previous>=50 and fov<previous then state.started=true end
-        if state.cueAt then
-            if now-state.cueAt>.08 or fov>=69.5 then
-                state.cueAt=nil;state.fired=true;return false
-            end
-            return true
-        end
-        if not state.fired and state.started and state.minimum>=5.5 and state.minimum<=6.5
-            and fov>previous+.001 and fov<69.5 then
-            state.cueAt=now;return true
-        end
-        if fov>=69.5 and state.started then state=nil end
-        return false
-    end
-    return detect,function()
-        if state then state.cueAt=nil;state.fired=true end
-    end
-end
-local detectBlackFlash,finishBlackFlash=newBlackFlashDetector()
-local m1Cooldown,quietAfterNanami=.04,.6
+local flash={last=nil,minimum=math.huge,descending=false,fired=false}
+local cameraTimingsOn=false
+local m1Cooldown,quietAfterNanami=.2,.6
 local lastProfileClick=-math.huge
 
 
@@ -1026,90 +942,73 @@ local gtCameraProfiles={
     ["81873132751170"]={name="SpiritBomb",frames={}},
     ["101369743951516"]={name="GoldenApe",frames={}}, -- Fixed FOV; suppress generic clicks.
 }
-local gtTrackStates={}
+local gtTrackStates=setmetatable({}, {__mode="k"})
 local function updateGTCamera(cam,now)
     local found=false
     local active={}
-    local childrenOK,rigs=pcall(function() return cam:GetChildren() end)
-    if not childrenOK or type(rigs)~="table" then return false end
-    for _,rig in ipairs(rigs) do
-        pcall(function()
-            if rig.Name~="GTKuCam" then return end
+    for _,rig in ipairs(cam:GetChildren()) do
+        if rig.Name=="GTKuCam" then
             local controller=rig:FindFirstChildOfClass("AnimationController")
-            if not controller then return end
-            local animator=controller:FindFirstChildOfClass("Animator")
-            local ok,tracks=pcall(function() return animator:GetPlayingAnimationTracks() end)
-            if not ok or type(tracks)~="table" then
-                ok,tracks=pcall(function() return controller:GetPlayingAnimationTracks() end)
-            end
-            if not ok or type(tracks)~="table" then return end
-            for _,track in ipairs(tracks) do
-                pcall(function()
+            local animator=controller and controller:FindFirstChildOfClass("Animator")
+            local ok,tracks=pcall(function()
+                return animator and animator:GetPlayingAnimationTracks() or controller:GetPlayingAnimationTracks()
+            end)
+            if ok and tracks then
+                for _,track in ipairs(tracks) do
                     local animation=track.Animation
                     local id=animation and tostring(animation.AnimationId):match("%d+")
                     local profile=id and gtCameraProfiles[id]
-                    if not profile or track.IsPlaying==false then return end
-                    local position=track.TimePosition
-                    if type(position)~="number" or position~=position or position<0 or position==math.huge then return end
-                    found=true
-                    local key=tostring(timingIdentity(cam))..":"..tostring(timingIdentity(rig))..":"..tostring(timingIdentity(track))..":"..id
-                    active[key]=true
-                    local frame=position*60
-                    local entry=gtTrackStates[key]
-                    if not entry or frame<entry.last-1 or now<entry.seen then
-                        -- Do not replay cues which occurred before tracking began.
-                        entry={last=frame,seen=now,fired={},pending={}}
-                        gtTrackStates[key]=entry
-                        return
-                    end
-                    for index,cue in ipairs(profile.frames) do
-                        if not entry.fired[index] and (entry.pending[index] or (entry.last<cue and frame>=cue)) then
-                            entry.pending[index]=entry.pending[index] or now
-                            if frame-cue>6 or now-entry.pending[index]>.1 or now-lastNanamiClick<quietAfterNanami then
-                                entry.fired[index]=true;entry.pending[index]=nil
-                            elseif now-lastProfileClick>=m1Cooldown and type(mouse1click)=="function" then
-                                if suspendInputBuffer then suspendInputBuffer() end
-                                local sent,result=pcall(mouse1click)
-                                if sent and result~=false then
-                                    entry.fired[index]=true;entry.pending[index]=nil;lastProfileClick=now
-                                    print("[ABA Timings] GT Goku "..profile.name.." zoom click; frame="..tostring(cue))
+                    if profile and track.IsPlaying then
+                        found=true;active[track]=true
+                        local frame=track.TimePosition*60
+                        local entry=gtTrackStates[track]
+                        if not entry or frame<entry.last-1 then
+                            -- Starting midway through a cutscene must not replay old cues.
+                            entry={last=frame,fired={}}
+                            gtTrackStates[track]=entry
+                        else
+                            for index,cue in ipairs(profile.frames) do
+                                if not entry.fired[index] and frame>cue then
+                                    entry.fired[index]=true
+                                    -- Cross the start of the outward zoom once; discard stale cues after a stall.
+                                    if entry.last<=cue and frame-cue<=6
+                                        and now-lastProfileClick>=m1Cooldown
+                                        and now-lastNanamiClick>=quietAfterNanami
+                                        and type(mouse1click)=="function" then
+                                        mouse1click();lastProfileClick=now
+                                        print("[ABA Timings] GT Goku "..profile.name.." zoom click; frame="..tostring(cue))
+                                    end
                                 end
                             end
+                            entry.last=frame
                         end
                     end
-                    entry.last=frame;entry.seen=now
-                end)
+                end
             end
-        end)
+        end
     end
-    for key in pairs(gtTrackStates) do
-        if not active[key] then gtTrackStates[key]=nil end
+    for track in pairs(gtTrackStates) do
+        if not active[track] then gtTrackStates[track]=nil end
     end
     return found
-end
-local resetKokushibo
-local cameraTimingSuspended=false
-local function resetCameraTimings()
-    detectBlackFlash,finishBlackFlash=newBlackFlashDetector()
-    detectCameraTiming=newCameraTimingDetector()
-    gtTrackStates={}
-end
-local function suspendCameraTimings()
-    if not cameraTimingSuspended then
-        resetCameraTimings()
-        if resetKokushibo then resetKokushibo() end
-        prompts={};armedUntil=0
-        cameraTimingSuspended=true
-    end
 end
 
 -- Shared camera detector, including GT Goku animation-specific zoom cues.
 flashTab:Toggle({Name="Camera Timings",Flag="auto_camera_timings_all",Default=false,Callback=function(on)
     cameraTimingsOn=on
-    resetCameraTimings()
-    cameraTimingSuspended=false
+    gtTrackStates=setmetatable({}, {__mode="k"})
+    flash={last=nil,minimum=math.huge,descending=false,fired=false}
 end})
 
+local resetKokushibo
+local cameraTimingSuspended=false
+local function suspendCameraTimings()
+    if not cameraTimingSuspended then
+        if resetKokushibo then resetKokushibo() end
+        prompts={};armedUntil=0
+        cameraTimingSuspended=true
+    end
+end
 
 local kokuTab=tab
 
@@ -1182,24 +1081,27 @@ local function updateOtherTimings()
         local cam=world.CurrentCamera
         local fov=cam and cam.FieldOfView
         if cam and updateGTCamera(cam,now) then
-            -- Timeline profiles own their cues; never double-click from FOV motion.
-            detectCameraTiming=newCameraTimingDetector()
-            detectBlackFlash,finishBlackFlash=newBlackFlashDetector()
-        else
-            local player=players.LocalPlayer
-            local character=player and player.Character
-            if detectBlackFlash(cam,fov,character,nil,now) then
-                if now-lastNanamiClick<quietAfterNanami or type(mouse1click)~="function" then
-                    finishBlackFlash()
-                elseif now-lastProfileClick>=m1Cooldown then
-                    if suspendInputBuffer then suspendInputBuffer() end
-                    local sent,result=pcall(mouse1click)
-                    if sent and result~=false then lastProfileClick=now;finishBlackFlash() end
+            flash={last=nil,minimum=math.huge,descending=false,fired=false}
+        elseif type(fov)=="number" then
+            if flash.last then
+                local delta=fov-flash.last
+                if delta<-.05 then flash.descending=true end
+                flash.minimum=math.min(flash.minimum,fov)
+                -- Reference MYABA uses a downward-FOV latch followed by any upward edge.
+                local endpoint=delta>.0001
+                if flash.descending and endpoint and not flash.fired then
+                    local ready=now-lastProfileClick>=m1Cooldown and now-lastNanamiClick>=quietAfterNanami
+                    if ready and type(mouse1click)=="function" then
+                        mouse1click();flash.fired=true
+                        lastProfileClick=now
+                        
+                        print("[ABA Timings v8] Black Flash zoom click; FOV="..tostring(fov)..", minimum="..tostring(flash.minimum))
+                    end
                 end
             end
+            if fov>=65 then flash={last=fov,minimum=fov,descending=false,fired=false}
+            else flash.minimum=math.min(flash.minimum,fov);flash.last=fov end
         end
-    else
-        detectCameraTiming=newCameraTimingDetector();detectBlackFlash,finishBlackFlash=newBlackFlashDetector()
     end
     if kokuOn then updateKokushibo(now) end
 end
