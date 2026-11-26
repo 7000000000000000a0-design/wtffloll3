@@ -646,6 +646,7 @@ local function connectFrame(signalName,callback,interval)
 end
 local lastNanamiClick=-math.huge
 local prompts = {}
+local armedUntil,lastKeys,lastNanamiCharacter=0,{},nil
 local connection, lastStatus, lastError
 local destroyHeadRide
 local destroyMahoragaCounter
@@ -662,7 +663,7 @@ local function message(text)
     end
 end
 tab:Toggle({Name="Auto Nanami", Default=false, Callback=function(on)
-    enabled=on; prompts={}; clicked=false
+    enabled=on; prompts={}; clicked=false;armedUntil=0;lastKeys={};lastNanamiCharacter=nil
     message(on and "Waiting for your Nanami move..." or "Auto Nanami: OFF")
 end})
 
@@ -900,8 +901,6 @@ local function mountPlayersTab()
 end
 destroyPlayersTab=mountPlayersTab()
 
-local armedUntil=0
-local lastKeys={}
 
 local function readRatio(bar,cutter)
     local ok,value=pcall(function()return cutter.Position.X.Scale end)
@@ -967,29 +966,51 @@ local function newCameraTimingDetector()
 end
 local detectCameraTiming=newCameraTimingDetector()
 
+local function timingIdentity(object)
+    if not object then return nil end
+    local ok,address=pcall(function() return object.Address end)
+    if ok and type(address)=="number" and address==address and address>0 and address<math.huge then return address end
+    return object
+end
 local function newBlackFlashDetector()
     local state
-    return function(camera,fov,character,skill,now)
-        if not camera or not character or not skill or skill==false or skill==0 or skill==""
-            or type(fov)~="number" or fov~=fov then state=nil;return false end
-        if not state or state.camera~=camera or state.character~=character or state.skill~=skill
+    local function detect(camera,fov,character,skill,now)
+        -- BlackFlashCheck.OnClientInvoke owns the local 6-FOV cue. It does not
+        -- create a UsingSkill value, so that marker cannot be a prerequisite.
+        if not camera or not character or type(now)~="number" or now~=now
+            or type(fov)~="number" or fov~=fov or fov<=0 or fov>=180 then state=nil;return false end
+        local cameraKey,characterKey=timingIdentity(camera),timingIdentity(character)
+        if not state or state.camera~=cameraKey or state.character~=characterKey
             or now-state.seen>.25 or now<state.seen then
-            state={camera=camera,character=character,skill=skill,last=fov,minimum=fov,seen=now}
+            state={camera=cameraKey,character=characterKey,last=fov,minimum=fov,seen=now}
             return false
         end
         local previous=state.last
+        if state.fired and previous>=12 and fov<previous-.01 then
+            -- A second pulse can start before the previous one reaches 70 FOV.
+            state.minimum=fov;state.fired=false;state.started=true;state.cueAt=nil
+        end
         state.last=fov;state.seen=now;state.minimum=math.min(state.minimum,fov)
         if previous>=50 and fov<previous then state.started=true end
+        if state.cueAt then
+            if now-state.cueAt>.08 or fov>=69.5 then
+                state.cueAt=nil;state.fired=true;return false
+            end
+            return true
+        end
         if not state.fired and state.started and state.minimum>=5.5 and state.minimum<=6.5
             and fov>previous+.001 and fov<69.5 then
-            state.fired=true;return true
+            state.cueAt=now;return true
         end
         if fov>=69.5 and state.started then state=nil end
         return false
     end
+    return detect,function()
+        if state then state.cueAt=nil;state.fired=true end
+    end
 end
-local detectBlackFlash=newBlackFlashDetector()
-local m1Cooldown,quietAfterNanami=.2,.6
+local detectBlackFlash,finishBlackFlash=newBlackFlashDetector()
+local m1Cooldown,quietAfterNanami=.04,.6
 local lastProfileClick=-math.huge
 
 
@@ -1005,64 +1026,88 @@ local gtCameraProfiles={
     ["81873132751170"]={name="SpiritBomb",frames={}},
     ["101369743951516"]={name="GoldenApe",frames={}}, -- Fixed FOV; suppress generic clicks.
 }
-local gtTrackStates=setmetatable({}, {__mode="k"})
+local gtTrackStates={}
 local function updateGTCamera(cam,now)
     local found=false
     local active={}
-    for _,rig in ipairs(cam:GetChildren()) do
-        if rig.Name=="GTKuCam" then
+    local childrenOK,rigs=pcall(function() return cam:GetChildren() end)
+    if not childrenOK or type(rigs)~="table" then return false end
+    for _,rig in ipairs(rigs) do
+        pcall(function()
+            if rig.Name~="GTKuCam" then return end
             local controller=rig:FindFirstChildOfClass("AnimationController")
-            local animator=controller and controller:FindFirstChildOfClass("Animator")
-            local ok,tracks=pcall(function()
-                return animator and animator:GetPlayingAnimationTracks() or controller:GetPlayingAnimationTracks()
-            end)
-            if ok and tracks then
-                for _,track in ipairs(tracks) do
+            if not controller then return end
+            local animator=controller:FindFirstChildOfClass("Animator")
+            local ok,tracks=pcall(function() return animator:GetPlayingAnimationTracks() end)
+            if not ok or type(tracks)~="table" then
+                ok,tracks=pcall(function() return controller:GetPlayingAnimationTracks() end)
+            end
+            if not ok or type(tracks)~="table" then return end
+            for _,track in ipairs(tracks) do
+                pcall(function()
                     local animation=track.Animation
                     local id=animation and tostring(animation.AnimationId):match("%d+")
                     local profile=id and gtCameraProfiles[id]
-                    if profile and track.IsPlaying then
-                        found=true;active[track]=true
-                        local frame=track.TimePosition*60
-                        local entry=gtTrackStates[track]
-                        if not entry or frame<entry.last-1 then
-                            -- Starting midway through a cutscene must not replay old cues.
-                            entry={last=frame,fired={}}
-                            gtTrackStates[track]=entry
-                        else
-                            for index,cue in ipairs(profile.frames) do
-                                if not entry.fired[index] and frame>cue then
-                                    entry.fired[index]=true
-                                    -- Cross the start of the outward zoom once; discard stale cues after a stall.
-                                    if entry.last<=cue and frame-cue<=6
-                                        and now-lastProfileClick>=m1Cooldown
-                                        and now-lastNanamiClick>=quietAfterNanami
-                                        and type(mouse1click)=="function" then
-                                        mouse1click();lastProfileClick=now
-                                        print("[ABA Timings] GT Goku "..profile.name.." zoom click; frame="..tostring(cue))
-                                    end
+                    if not profile or track.IsPlaying==false then return end
+                    local position=track.TimePosition
+                    if type(position)~="number" or position~=position or position<0 or position==math.huge then return end
+                    found=true
+                    local key=tostring(timingIdentity(cam))..":"..tostring(timingIdentity(rig))..":"..tostring(timingIdentity(track))..":"..id
+                    active[key]=true
+                    local frame=position*60
+                    local entry=gtTrackStates[key]
+                    if not entry or frame<entry.last-1 or now<entry.seen then
+                        -- Do not replay cues which occurred before tracking began.
+                        entry={last=frame,seen=now,fired={},pending={}}
+                        gtTrackStates[key]=entry
+                        return
+                    end
+                    for index,cue in ipairs(profile.frames) do
+                        if not entry.fired[index] and (entry.pending[index] or (entry.last<cue and frame>=cue)) then
+                            entry.pending[index]=entry.pending[index] or now
+                            if frame-cue>6 or now-entry.pending[index]>.1 or now-lastNanamiClick<quietAfterNanami then
+                                entry.fired[index]=true;entry.pending[index]=nil
+                            elseif now-lastProfileClick>=m1Cooldown and type(mouse1click)=="function" then
+                                if suspendInputBuffer then suspendInputBuffer() end
+                                local sent,result=pcall(mouse1click)
+                                if sent and result~=false then
+                                    entry.fired[index]=true;entry.pending[index]=nil;lastProfileClick=now
+                                    print("[ABA Timings] GT Goku "..profile.name.." zoom click; frame="..tostring(cue))
                                 end
                             end
-                            entry.last=frame
                         end
                     end
-                end
+                    entry.last=frame;entry.seen=now
+                end)
             end
-        end
+        end)
     end
-    for track in pairs(gtTrackStates) do
-        if not active[track] then gtTrackStates[track]=nil end
+    for key in pairs(gtTrackStates) do
+        if not active[key] then gtTrackStates[key]=nil end
     end
     return found
+end
+local resetKokushibo
+local cameraTimingSuspended=false
+local function resetCameraTimings()
+    detectBlackFlash,finishBlackFlash=newBlackFlashDetector()
+    detectCameraTiming=newCameraTimingDetector()
+    gtTrackStates={}
+end
+local function suspendCameraTimings()
+    if not cameraTimingSuspended then
+        resetCameraTimings()
+        if resetKokushibo then resetKokushibo() end
+        prompts={};armedUntil=0
+        cameraTimingSuspended=true
+    end
 end
 
 -- Shared camera detector, including GT Goku animation-specific zoom cues.
 flashTab:Toggle({Name="Camera Timings",Flag="auto_camera_timings_all",Default=false,Callback=function(on)
     cameraTimingsOn=on
-    detectBlackFlash=newBlackFlashDetector()
-    detectCameraTiming=newCameraTimingDetector()
-    gtTrackStates=setmetatable({}, {__mode="k"})
-    flash={last=nil,minimum=math.huge,descending=false,fired=false}
+    resetCameraTimings()
+    cameraTimingSuspended=false
 end})
 
 
@@ -1070,21 +1115,68 @@ local kokuTab=tab
 
 local kokuOn=false
 
-local koku={gui=nil,positions={},moved=false,stable=0,fired=false}
+local koku
+resetKokushibo=function() koku={gui=nil,positions={},moved=false,stable=0,fired=false} end
+resetKokushibo()
 kokuTab:Toggle({Name="Auto Kokushibo",Default=false,Callback=function(on)
-    kokuOn=on;koku={gui=nil,positions={},moved=false,stable=0,fired=false}
-    
+    kokuOn=on;resetKokushibo()
 end})
-local function localX(obj)
-    local ok,x=pcall(function()return obj.Position.X.Scale end)
-    if ok and type(x)=="number" then return x end
+local function localXY(obj)
+    local function finite(value) return type(value)=="number" and value==value and math.abs(value)<math.huge end
+    local ok,x,y=pcall(function() return obj.Position.X.Scale,obj.Position.Y.Scale end)
+    if ok and finite(x) and finite(y) then return x,y end
     if positionOffset and type(memory_read)=="function" then
-        local success,value=pcall(function()return memory_read("float",obj.Address+positionOffset)end)
-        if success and type(value)=="number" and value==value then return value end
+        local success,a,b=pcall(function()
+            return memory_read("float",obj.Address+positionOffset),memory_read("float",obj.Address+positionOffset+8)
+        end)
+        if success and finite(a) and finite(b) then return a,b end
+    end
+end
+local function updateKokushibo(now)
+    local player=players.LocalPlayer
+    local pg=player and player:FindFirstChild("PlayerGui")
+    local gui=pg and pg:FindFirstChild("FrenchKokushibo")
+    if not gui then resetKokushibo();return end
+    local enabledOK,visible=pcall(function() return gui.Enabled end)
+    if enabledOK and visible==false then resetKokushibo();return end
+    local key=timingIdentity(gui)
+    if key~=koku.gui or (koku.seen and (now<koku.seen or now-koku.seen>.25)) then
+        resetKokushibo();koku.gui=key
+    end
+    koku.seen=now
+    local ok,eyes=pcall(function() return gui:GetChildren() end)
+    if not ok or type(eyes)~="table" then resetKokushibo();return end
+    local changed,count=false,0
+    local positions={}
+    for _,eye in ipairs(eyes) do
+        local readable,x,y=pcall(localXY,eye)
+        if readable and x~=nil and y~=nil then
+            count=count+1
+            local id=timingIdentity(eye)
+            local previous=koku.positions[id]
+            if previous and (math.abs(x-previous.x)>.000001 or math.abs(y-previous.y)>.000001) then changed=true end
+            positions[id]={x=x,y=y}
+        end
+    end
+    if count==0 then resetKokushibo();return end
+    if koku.count~=count then koku.moved=false;koku.stable=0;koku.stoppedAt=nil end
+    koku.positions=positions;koku.count=count
+    if changed then
+        koku.moved=true;koku.stable=0;koku.stoppedAt=nil;koku.fired=false
+    elseif koku.moved then
+        koku.stable=koku.stable+1;koku.stoppedAt=koku.stoppedAt or now
+    end
+    if koku.fired or not koku.stoppedAt then return end
+    if now-koku.stoppedAt>.15 then koku.fired=true;return end
+    if koku.stable>=2 and now-koku.stoppedAt>=.035 and type(mouse2click)=="function" then
+        if suspendInputBuffer then suspendInputBuffer() end
+        local sent,result=pcall(mouse2click)
+        if sent and result~=false then koku.fired=true end
     end
 end
 local function updateOtherTimings()
-    if not alive or macroBusy or whitelistBlocksInput() then return end
+    if not alive or macroBusy or whitelistBlocksInput() then suspendCameraTimings();return end
+    cameraTimingSuspended=false
     local now=tick and tick() or os.clock()
     if cameraTimingsOn then
         local cam=world.CurrentCamera
@@ -1092,53 +1184,26 @@ local function updateOtherTimings()
         if cam and updateGTCamera(cam,now) then
             -- Timeline profiles own their cues; never double-click from FOV motion.
             detectCameraTiming=newCameraTimingDetector()
+            detectBlackFlash,finishBlackFlash=newBlackFlashDetector()
         else
             local player=players.LocalPlayer
             local character=player and player.Character
-            local skill
-            pcall(function()
-                local marker=character and character:FindFirstChild("UsingSkill")
-                skill=marker and marker.Value
-            end)
-            if detectBlackFlash(cam,fov,character,skill,now) and now-lastProfileClick>=m1Cooldown
-                and now-lastNanamiClick>=quietAfterNanami and type(mouse1click)=="function" then
-                if suspendInputBuffer then suspendInputBuffer() end
-                mouse1click();lastProfileClick=now
+            if detectBlackFlash(cam,fov,character,nil,now) then
+                if now-lastNanamiClick<quietAfterNanami or type(mouse1click)~="function" then
+                    finishBlackFlash()
+                elseif now-lastProfileClick>=m1Cooldown then
+                    if suspendInputBuffer then suspendInputBuffer() end
+                    local sent,result=pcall(mouse1click)
+                    if sent and result~=false then lastProfileClick=now;finishBlackFlash() end
+                end
             end
         end
     else
-        detectCameraTiming=newCameraTimingDetector();detectBlackFlash=newBlackFlashDetector()
+        detectCameraTiming=newCameraTimingDetector();detectBlackFlash,finishBlackFlash=newBlackFlashDetector()
     end
-    if kokuOn then
-        local player=players.LocalPlayer
-        local pg=player and player:FindFirstChild("PlayerGui")
-        local gui=pg and pg:FindFirstChild("FrenchKokushibo")
-        if not gui then koku={gui=nil,positions={},moved=false,stable=0,fired=false};return end
-        local key=gui.Address or gui
-        if key~=koku.gui then koku={gui=key,positions={},moved=false,stable=0,fired=false} end
-        if koku.fired then return end
-        local changed=false
-        local count=0
-        for _,eye in ipairs(gui:GetChildren())do
-            local x=localX(eye)
-            if x then
-                count=count+1
-                local id=eye.Address or eye
-                local previousX=koku.positions[id]
-                if previousX and math.abs(x-previousX)>.000001 then changed=true end
-                koku.positions[id]=x
-            end
-        end
-        if count==0 then return end
-        if changed then koku.moved=true;koku.stable=0
-        elseif koku.moved then koku.stable=koku.stable+1 end
-        if koku.stable>=2 then
-            if type(mouse2click)=="function" then
-                mouse2click();koku.fired=true
-            end
-        end
-    end
+    if kokuOn then updateKokushibo(now) end
 end
+
 local function child(parent,name) return parent and parent:FindFirstChild(name) end
 local function barsIn(model, results)
     local root=child(model,"HumanoidRootPart")
@@ -1153,11 +1218,14 @@ local function barsIn(model, results)
 end
 local function locate(character)
     local results={}
-    barsIn(character,results)
+    pcall(barsIn,character,results)
     local live=child(world,"Live")
     if live then
-        for _,model in ipairs(live:GetChildren()) do
-            if model ~= character then barsIn(model,results) end
+        local ok,models=pcall(function() return live:GetChildren() end)
+        if ok and type(models)=="table" then
+            for _,model in ipairs(models) do
+                if model ~= character then pcall(barsIn,model,results) end
+            end
         end
     end
     return results
@@ -1167,16 +1235,23 @@ local function update()
     if type(mouse1click) ~= "function" then message("This runner has no mouse1click API."); return end
     local player=players.LocalPlayer
     local character=player and player.Character
+    local identity=timingIdentity(character)
+    if identity~=lastNanamiCharacter then
+        lastNanamiCharacter=identity;prompts={};armedUntil=0;lastKeys={}
+    end
     -- Some builds do not expose NANAMIAIM; arm only from the local move keys.
     local now=tick and tick() or os.clock()
     if type(iskeypressed)=="function" then
         for key=0x31,0x34 do
-            local down=iskeypressed(key)==true
-            if down and not lastKeys[key] then armedUntil=now+5 end
-            lastKeys[key]=down
+            local ok,down=pcall(iskeypressed,key)
+            if ok and type(down)=="boolean" then
+                if down and not lastKeys[key] then armedUntil=now+5 end
+                lastKeys[key]=down
+            end
         end
     end
-    local aiming=character and character:GetAttribute("NANAMIAIM")
+    local aiming
+    pcall(function() aiming=character and character:GetAttribute("NANAMIAIM") end)
     if not character or (not aiming and now>armedUntil) then
         prompts={}; message("Waiting for your Nanami move..."); return
     end
@@ -1186,7 +1261,7 @@ local function update()
     if #candidates == 0 then message("Waiting for the game's ratio bar...") end
     for _,candidate in ipairs(candidates) do
         local gui,bar,cutter=candidate.gui,candidate.bar,candidate.cutter
-        local key=gui.Address or gui
+        local key=timingIdentity(gui)
         seen[key]=true
         local prompt=prompts[key] or {fired=false}
         prompts[key]=prompt
@@ -1198,10 +1273,14 @@ local function update()
                 prompt.last=ratio
                 if not prompt.fired then
                     if math.abs(ratio-.7) < .018 and not sent then
-                        mouse1click(); prompt.fired=true; sent=true
-                        lastNanamiClick=tick and tick() or os.clock()
-                        print("[Nanami Timing v3] Click at "..tostring(ratio).." via "..method)
-                        message("Timing click sent; watching for the next prompt...")
+                        if suspendInputBuffer then suspendInputBuffer() end
+                        local accepted,result=pcall(mouse1click)
+                        if accepted and result~=false then
+                            prompt.fired=true;sent=true
+                            lastNanamiClick=tick and tick() or os.clock()
+                            print("[Nanami Timing v3] Click at "..tostring(ratio).." via "..method)
+                            message("Timing click sent; watching for the next prompt...")
+                        end
                     elseif ratio <= .72 then
                         message("Tracking: "..tostring(math.floor(ratio*100+.5)).."%")
                     end
@@ -2008,7 +2087,7 @@ connection=connectFrame("Heartbeat",function()
     if not macroBusy and releaseMacroInputs then pcall(releaseMacroInputs) end
     if not alive then return end
     local inputOK, acceptsInput = pcall(macroInputAllowed)
-    if not inputOK or not acceptsInput then return end
+    if not inputOK or not acceptsInput then suspendCameraTimings();return end
     local ok,err=pcall(update)
     if not ok then
         message("Tracking unavailable; see Matcha output.")
